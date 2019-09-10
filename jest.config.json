@@ -1,0 +1,20 @@
+{
+  "testPathIgnorePatterns": [
+    "/node_modules/",
+    "<rootDir>/test/",
+    "<rootDir>/dist/"
+  ],
+  "transform": {
+    "^.+\\.(t|j)sx?$": "ts-jest"
+  },
+  "testRegex": "(/__tests__/.*|(\\.|/)(test|spec))\\.(jsx?|tsx?)$",
+  "moduleFileExtensions": [
+    "ts",
+    "js"
+  ],
+  "clearMocks": true,
+  "modulePaths": [
+    "<rootDir>/src/"
+  ],
+  "testURL": "http://localhost/"
+}

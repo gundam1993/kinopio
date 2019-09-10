@@ -1,0 +1,9 @@
+*.pyc
+dist
+node_modules
+yarn-error.log
+*-rsa
+payload.json
+.vscode
+.venv
+.idea/

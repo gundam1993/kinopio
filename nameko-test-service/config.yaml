@@ -1,0 +1,14 @@
+
+serializer: xjson
+
+SERIALIZERS:
+  xjson:
+    encoder: xjson.encode
+    decoder: xjson.decode
+    content_type: application/xjson
+
+ACCEPT:
+  - json
+  - xjson
+
+AMQP_URI: amqp://guest:guest@localhost:5672/
