@@ -7,3 +7,4 @@ payload.json
 .vscode
 .venv
 .idea/
+coverage
