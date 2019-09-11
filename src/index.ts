@@ -262,12 +262,12 @@ export class Kinopio {
 
     this.connection.on('close', () => {
       this.logger('connection close');
-      reestablishConnection();
+      this.reestablishConnection();
     });
 
     this.connection.on('error', () => {
       this.logger('connection error');
-      reestablishConnection();
+      this.reestablishConnection();
     });
 
     this.channel = await this.connection.createChannel();
