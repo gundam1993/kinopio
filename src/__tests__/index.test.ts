@@ -1,12 +1,10 @@
 import {
-  rpcProxy,
-  rpcSetup,
-  rpcTearDown,
   ServiceBase,
   rpcMethod,
   RpcContext,
   RpcError,
-} from '.';
+  Kinopio,
+} from '..';
 import { camelizeKeys } from 'humps';
 
 interface TestService extends ServiceBase {
@@ -23,17 +21,32 @@ interface TestContext {
   test_service: TestService;
 }
 
-const rpc: RpcContext<TestContext> = rpcProxy({
-  workerCtx: {
-    'nameko.authorization': 'testAuthorization',
-    'nameko.language': 'en-us',
-    'nameko.locale': 'en-us',
-  },
-});
+const hostname = process.env.RABBIT_SERVER;
+const port = parseInt(process.env.RABBIT_PORT, 10);
+const vhost = process.env.RABBIT_VHOST;
+const username = process.env.RABBIT_USER;
+const password = process.env.RABBIT_PASS;
+const namekoWorkerCtx = {
+  'nameko.authorization': 'testAuthorization',
+  'nameko.language': 'en-us',
+  'nameko.locale': 'en-us',
+};
 
 describe('rpc', () => {
-  beforeAll(() => rpcSetup());
-  afterAll(() => rpcTearDown());
+  const kinopio = new Kinopio({
+        hostname,
+        port,
+        vhost,
+        username,
+        password,
+        namekoWorkerCtx,
+      })
+  let rpc:RpcContext<TestContext>;
+  beforeAll(
+    async() =>
+      (rpc = await kinopio.connect())
+  );
+  afterAll(() => kinopio.close());
 
   test('can make a basic rpc call', async () => {
     await expect(rpc.test_service.ping()).resolves.toBe('pong');
@@ -108,19 +121,11 @@ describe('rpc', () => {
   });
 
   test('return workerCtx', async () => {
-    await expect(rpc.workerCtx).resolves.toEqual({
+    expect(rpc.workerCtx).toEqual({
       'nameko.authorization': 'testAuthorization',
       'nameko.language': 'en-us',
       'nameko.locale': 'en-us',
     });
-  });
-});
-
-describe('rpc without setup', () => {
-  test('will throw err if rpcSetup not called', async () => {
-    await expect(rpc.test_service.ping()).rejects.toMatchObject(
-      new Error('no channel, call rpcSetup() first')
-    );
   });
 });
 
@@ -129,8 +134,23 @@ describe('hooks', () => {
   const onResponse = jest.fn();
   const processResponse = jest.fn((result) => camelizeKeys(result));
 
-  beforeAll(() => rpcSetup({ onRequest, onResponse, processResponse }));
-  afterAll(() => rpcTearDown());
+  const kinopio = new Kinopio({
+    hostname,
+    port,
+    vhost,
+    username,
+    password,
+    namekoWorkerCtx,
+    onRequest,
+    onResponse,
+    processResponse
+  })
+let rpc:RpcContext<TestContext>;
+beforeAll(
+async() =>
+  (rpc = await kinopio.connect())
+);
+afterAll(() => kinopio.close());
 
   test('calls onResquest', async () => {
     await rpc.test_service.ping();
