@@ -1,10 +1,4 @@
-import {
-  ServiceBase,
-  rpcMethod,
-  RpcContext,
-  RpcError,
-  Kinopio,
-} from '..';
+import { ServiceBase, rpcMethod, RpcContext, RpcError, Kinopio } from '..';
 import { camelizeKeys } from 'humps';
 
 interface TestService extends ServiceBase {
@@ -34,18 +28,18 @@ const namekoWorkerCtx = {
 
 describe('rpc', () => {
   const kinopio = new Kinopio({
-        hostname,
-        port,
-        vhost,
-        username,
-        password,
-        namekoWorkerCtx,
-      })
-  let rpc:RpcContext<TestContext>;
-  beforeAll(
-    async() =>
-      (rpc = await kinopio.connect())
-  );
+    hostname,
+    port,
+    vhost,
+    username,
+    password,
+    namekoWorkerCtx,
+    logger: () => {},
+    requestLogger: () => {},
+    responseLogger: () => {},
+  });
+  let rpc: RpcContext<TestContext>;
+  beforeAll(async () => (rpc = await kinopio.connect()));
   afterAll(() => kinopio.close());
 
   test('can make a basic rpc call', async () => {
@@ -143,14 +137,14 @@ describe('hooks', () => {
     namekoWorkerCtx,
     onRequest,
     onResponse,
-    processResponse
-  })
-let rpc:RpcContext<TestContext>;
-beforeAll(
-async() =>
-  (rpc = await kinopio.connect())
-);
-afterAll(() => kinopio.close());
+    processResponse,
+    logger: () => {},
+    requestLogger: () => {},
+    responseLogger: () => {},
+  });
+  let rpc: RpcContext<TestContext>;
+  beforeAll(async () => (rpc = await kinopio.connect()));
+  afterAll(() => kinopio.close());
 
   test('calls onResquest', async () => {
     await rpc.test_service.ping();

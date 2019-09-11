@@ -310,22 +310,29 @@ export class Kinopio {
     setTimeout(this.reconnect, this.reconnectInterval);
   }
 
-  protected async reconnect() {
+  protected reconnect = async () => {
     this.logger(
       `trying to reconnect to amqp://${this.mqOptions.hostname}:${this.mqOptions.port}/${this.mqOptions.vhost}`
     );
     this.numAttempts += 1;
-  const timeout = this.reconnectInterval + this.numAttempts * this.reconnectInterval;
-  try {
-    await this.connectMq();
-    this.reconnectLock = false;
-  } catch (error) {
-    if (this.numAttempts === this.reconnectMaxAttemptes) {
-      this.logger(`failed to reconnect after ${this.reconnectMaxAttemptes} tries`);
-      throw new Error(`AMQP disconnected after ${this.reconnectMaxAttemptes} attempts`);
+    const timeout =
+      this.reconnectInterval + this.numAttempts * this.reconnectInterval;
+    try {
+      await this.connectMq();
+      this.reconnectLock = false;
+    } catch (error) {
+      if (this.numAttempts === this.reconnectMaxAttemptes) {
+        this.logger(
+          `failed to reconnect after ${this.reconnectMaxAttemptes} tries`
+        );
+        throw new Error(
+          `AMQP disconnected after ${this.reconnectMaxAttemptes} attempts`
+        );
+      }
+      this.logger(
+        `could not connect, trying again in ${timeout / 1000} seconds`
+      );
+      setTimeout(this.reconnect, this.reconnectInterval);
     }
-    this.logger(`could not connect, trying again in ${timeout / 1000} seconds`);
-    setTimeout(this.reconnect, this.reconnectInterval);
-  }
-  }
+  };
 }
