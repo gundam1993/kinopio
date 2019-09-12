@@ -33,13 +33,15 @@ describe('rpc', () => {
     vhost,
     username,
     password,
-    namekoWorkerCtx,
     logger: () => {},
     requestLogger: () => {},
     responseLogger: () => {},
   });
+  
   let rpc: RpcContext<TestContext>;
-  beforeAll(async () => (rpc = await kinopio.connect()));
+  beforeAll(async () => {
+    await kinopio.connect()
+    rpc = await kinopio.buildRpcProxy(namekoWorkerCtx)});
   afterAll(() => kinopio.close());
 
   test('can make a basic rpc call', async () => {
@@ -134,7 +136,6 @@ describe('hooks', () => {
     vhost,
     username,
     password,
-    namekoWorkerCtx,
     onRequest,
     onResponse,
     processResponse,
@@ -143,7 +144,9 @@ describe('hooks', () => {
     responseLogger: () => {},
   });
   let rpc: RpcContext<TestContext>;
-  beforeAll(async () => (rpc = await kinopio.connect()));
+  beforeAll(async () => {
+    await kinopio.connect()
+    rpc = await kinopio.buildRpcProxy(namekoWorkerCtx)});
   afterAll(() => kinopio.close());
 
   test('calls onResquest', async () => {

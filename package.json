@@ -1,6 +1,6 @@
 {
   "name": "kinopio",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "a node client for nameko",
   "main": "index.ts",
   "scripts": {

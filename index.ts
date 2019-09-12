@@ -75,9 +75,6 @@ export interface KinopioConfig {
   ) => void;
   onResponse?: (response: any) => void;
   processResponse?: (response: any) => any;
-  namekoWorkerCtx?: {
-    [key: string]: any;
-  };
   queuePrefix?: string;
   logger?: any;
   requestLogger?: any;
@@ -92,9 +89,6 @@ export class Kinopio {
   private connection: amqp.Connection;
   private channel: amqp.Channel;
   private entrypointHooks: EntrypointsHooks;
-  private namekoWorkerCtx: {
-    [key: string]: any;
-  } = {};
   private queuePrefix: string;
   private rpcResolvers: any = {};
   private replyToId: string;
@@ -118,7 +112,6 @@ export class Kinopio {
       onRequest,
       onResponse,
       processResponse,
-      namekoWorkerCtx,
       queuePrefix,
       logger = console.log,
       requestLogger,
@@ -130,7 +123,6 @@ export class Kinopio {
 
     this.mqOptions = { hostname, port, vhost, username, password };
     this.entrypointHooks = { onRequest, onResponse, processResponse };
-    this.namekoWorkerCtx = namekoWorkerCtx || {};
     this.queuePrefix = queuePrefix || 'rpc.replay';
     this.replyToId = uuid();
     this.logger = logger;
@@ -143,7 +135,6 @@ export class Kinopio {
 
   public async connect(): Promise<RpcContext> {
     await this.connectMq();
-    return this.rpcProxy(this.namekoWorkerCtx);
   }
 
   public async close(): Promise<void> {
@@ -155,7 +146,7 @@ export class Kinopio {
     this.logger('amqp server disconnected');
   }
 
-  protected rpcProxy = (workerCtx = {}): RpcContext => {
+  public buildRpcProxy = (workerCtx = {}): RpcContext => {
     return new Proxy(
       { workerCtx },
       {
