@@ -2,12 +2,13 @@
   "name": "kinopio",
   "version": "1.0.0",
   "description": "a node client for nameko",
-  "main": "index.js",
+  "main": "index.ts",
   "scripts": {
     "test": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json",
     "coverage": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json --coverage"
   },
-  "author": "gundam1993@gmail.com",
+  "author": "gundam1993 <gundam1993@gmail.com>",
+  "keywords": ["nameko", "rpc"],
   "license": "MIT",
   "devDependencies": {
     "@types/amqplib": "^0.5.13",
