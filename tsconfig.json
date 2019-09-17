@@ -6,12 +6,11 @@
     "moduleResolution": "node",
     "experimentalDecorators": true,
     "skipLibCheck": true,
-    "outDir": "dist",
+    "outDir": "lib",
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "inlineSourceMap": true
   },
-  "include": [
-    "src/**/*", "index.ts", "__tests__"
-  ]
+  "files": ["lib/index.ts"],
+  "include": ["lib/index.ts"]
 }

@@ -1,12 +1,17 @@
 {
   "name": "kinopio",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "a node client for nameko",
-  "main": "index.ts",
+  "main": "index.js",
+  "types": "index.d.ts",
   "scripts": {
     "test": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json",
-    "coverage": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json --coverage"
+    "coverage": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json --coverage",
+    "build": "tsc",
+    "build-def": "tsc --declaration lib/index.ts",
+    "prepare": "yarn build && yarn build-def"
   },
+  
   "author": "gundam1993 <gundam1993@gmail.com>",
   "keywords": ["nameko", "rpc"],
   "license": "MIT",
