@@ -29,6 +29,9 @@ export class RpcError extends Error {
     this.remoteArgs = remoteArgs;
     this.remoteName = remoteName;
     this.remoteFullName = remoteFullName;
+
+    // Set the prototype explicitly.
+    Object.setPrototypeOf(this, RpcError.prototype);
   }
 }
 
