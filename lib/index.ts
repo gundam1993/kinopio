@@ -37,7 +37,7 @@ export class RpcError extends Error {
 
 function parseXJson(_, value) {
   if (typeof value === 'string') {
-    const stringableMatches = value.match(/^\!\!(datetime|date|deciaml) (.*)/);
+    const stringableMatches = value.match(/^\!\!(datetime|date|decimal) (.*)/);
     let parsedValue = value;
     if (stringableMatches && stringableMatches.length === 3) {
       parsedValue = stringableMatches[2];
@@ -222,6 +222,7 @@ export class Kinopio {
 
     if (correlationId in this.rpcResolvers) {
       const rawMessageContent = message.content.toString();
+      console.log('rawMessageContent: ', rawMessageContent);
       const messageContent = JSON.parse(rawMessageContent, parseXJson);
 
       const resolver = this.rpcResolvers[correlationId];

@@ -43,7 +43,7 @@ class Service:
         return {
             'datetime': '!!datetime 2018-01-01T01:01:01',
             'date': '!!date 2018-05-29',
-            'decimal': '!!deciaml 3.1415',
+            'decimal': '!!decimal 3.1415',
             'int': 1,
             'float': 0.01,
             'string': 'foo',

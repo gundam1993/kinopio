@@ -69,7 +69,9 @@ describe('rpc', () => {
   });
 
   test('can get serialised xjson data', async () => {
-    await expect(rpc.test_service.get_some_xjson_data()).resolves.toEqual({
+    const result = await rpc.test_service.get_some_xjson_data()
+    console.log('result: ', result);
+    expect(result).toEqual({
       datetime: '2018-01-01T01:01:01',
       date: '2018-05-29',
       decimal: '3.1415',
