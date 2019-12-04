@@ -222,7 +222,6 @@ export class Kinopio {
 
     if (correlationId in this.rpcResolvers) {
       const rawMessageContent = message.content.toString();
-      console.log('rawMessageContent: ', rawMessageContent);
       const messageContent = JSON.parse(rawMessageContent, parseXJson);
 
       const resolver = this.rpcResolvers[correlationId];
