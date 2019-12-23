@@ -5,4 +5,4 @@
 
 Install the `Kinopio` using:
 
-    yarn install kinopio
+    yarn add kinopio
