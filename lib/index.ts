@@ -209,7 +209,7 @@ export class Kinopio {
           replyTo: this.replyToId,
           headers: workerCtx,
           contentEncoding: 'utf-8',
-          contentType: 'application/xjson',
+          contentType: workerCtx['content_type'] || 'application/xjson', 
           deliveryMode: 2,
           priority: 0,
         }
