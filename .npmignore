@@ -1,0 +1,14 @@
+*.pyc
+dist
+yarn-error.log
+*-rsa
+payload.json
+.vscode
+.venv
+.idea/
+coverage
+nameko-test-service
+lib/__tests__
+jest.config.json
+.env
+.github/

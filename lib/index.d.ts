@@ -1,4 +1,9 @@
 import * as amqp from 'amqplib';
+export declare enum EventHandlerType {
+    SERVICE_POOL = 0,
+    SINGLETON = 1,
+    BROADCAST = 2
+}
 export declare class RpcError extends Error {
     code: string;
     remoteArgs: string[];
@@ -10,9 +15,9 @@ export interface RpcPayload {
     args?: any[];
     kwargs?: object;
 }
-export declare type rpcMethod<T = any> = (payload?: RpcPayload) => Promise<T>;
+export declare type RpcMethod<T = any> = (payload?: RpcPayload) => Promise<T>;
 export interface ServiceBase {
-    [key: string]: rpcMethod | any;
+    [key: string]: RpcMethod | any;
 }
 interface RpcContextBase {
     workerCtx: any;
@@ -37,9 +42,11 @@ export interface KinopioConfig {
     reconnectMaxAttemptes?: number;
 }
 export declare class Kinopio {
+    private serviceName;
     private mqOptions;
     private connection;
     private channel;
+    private eventChannels;
     private entrypointHooks;
     private queuePrefix;
     private rpcResolvers;
@@ -52,13 +59,16 @@ export declare class Kinopio {
     private reconnectInterval;
     private reconnectMaxAttemptes;
     private numAttempts;
-    constructor(config: KinopioConfig);
+    constructor(serviceName: string, config: KinopioConfig);
     connect(): Promise<RpcContext>;
     close(): Promise<void>;
     buildRpcProxy: (workerCtx?: {}) => any;
+    rpcEventHandler: (sourceService: string, eventType: string, handlerType?: EventHandlerType, reliableDelivery?: boolean, requeueOnError?: boolean) => MethodDecorator;
+    createEventHandler: (sourceService: string, eventType: string, handlerType: EventHandlerType, handlerName: string, handlerFunction: (msg: any) => any, reliableDelivery: boolean, requeueOnError: boolean) => Promise<void>;
     protected callRpc: (serviceName: string, functionName: string, payload?: RpcPayload, workerCtx?: object) => Promise<unknown>;
     protected consumeQueue: (message: any) => void;
     protected connectMq: () => Promise<void>;
+    protected parseMessage(message: any): any;
     protected reestablishConnection(): void;
     protected reconnect: () => Promise<void>;
 }
