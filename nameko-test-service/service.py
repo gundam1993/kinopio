@@ -1,5 +1,7 @@
 from nameko.rpc import rpc
+from nameko.events import EventDispatcher
 from nameko.extensions import DependencyProvider
+import time
 
 
 class CustomException(Exception):
@@ -12,12 +14,17 @@ class WorkerCtx(DependencyProvider):
 
 
 class Service:
-    name = 'test_service'
+    name = 'tests'
 
     worker_ctx = WorkerCtx()
+    event_dispatcher = EventDispatcher()
 
     @rpc
     def ping(self):
+        print('ping')
+        self.event_dispatcher("ping_pong", {
+            "info": "ping-pong!"
+        })
         return 'pong'
 
     @rpc

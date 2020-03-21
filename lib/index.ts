@@ -11,6 +11,12 @@ interface EntrypointsHooks {
   ) => void;
 }
 
+export enum EventHandlerType {
+  SERVICE_POOL,
+  SINGLETON,
+  BROADCAST,
+}
+
 export class RpcError extends Error {
   code: string;
   remoteArgs: string[];
@@ -35,6 +41,12 @@ export class RpcError extends Error {
   }
 }
 
+class EventHandlerConfigurationError extends Error {
+  constructor(message) {
+    super(message);
+  }
+}
+
 function parseXJson(_, value) {
   if (typeof value === 'string') {
     const stringableMatches = value.match(/^\!\!(datetime|date|decimal) (.*)/);
@@ -52,10 +64,10 @@ export interface RpcPayload {
   kwargs?: object;
 }
 
-export type rpcMethod<T = any> = (payload?: RpcPayload) => Promise<T>;
+export type RpcMethod<T = any> = (payload?: RpcPayload) => Promise<T>;
 
 export interface ServiceBase {
-  [key: string]: rpcMethod | any;
+  [key: string]: RpcMethod | any;
 }
 
 interface RpcContextBase {
@@ -88,9 +100,11 @@ export interface KinopioConfig {
 }
 
 export class Kinopio {
+  private serviceName: string = 'kinopio';
   private mqOptions: amqp.Options.Connect;
   private connection: amqp.Connection;
   private channel: amqp.Channel;
+  private eventChannels: amqp.Channel[];
   private entrypointHooks: EntrypointsHooks;
   private queuePrefix: string;
   private rpcResolvers: any = {};
@@ -104,8 +118,9 @@ export class Kinopio {
   private reconnectMaxAttemptes: number;
   private numAttempts: number = 0;
 
-  constructor(config: KinopioConfig) {
+  constructor(serviceName: string = 'kinopio', config: KinopioConfig) {
     if (!config) throw new Error('Kinopio requires options.');
+    this.serviceName = serviceName;
     const {
       hostname,
       port,
@@ -134,6 +149,7 @@ export class Kinopio {
     this.userCallbackOnConnect = onConnect || (() => {});
     this.reconnectInterval = reconnectInterval || 2000;
     this.reconnectMaxAttemptes = reconnectMaxAttemptes || 10;
+    this.eventChannels = [];
   }
 
   public async connect(): Promise<RpcContext> {
@@ -161,7 +177,7 @@ export class Kinopio {
             { serviceName },
             {
               get: (serviceTarget, functionName) => {
-                return (payload) =>
+                return payload =>
                   this.callRpc(
                     serviceTarget.serviceName.toString(),
                     functionName.toString(),
@@ -172,6 +188,108 @@ export class Kinopio {
             }
           );
         },
+      }
+    );
+  };
+
+  public rpcEventHandler = (
+    sourceService: string,
+    eventType: string,
+    handlerType: EventHandlerType = EventHandlerType.SERVICE_POOL,
+    reliableDelivery: boolean = true,
+    requeueOnError: boolean = false
+  ): MethodDecorator => {
+    return (
+      _,
+      propertyKey: string,
+      descriptor: PropertyDescriptor
+    ): void => {
+      const originalFunction = descriptor.value;
+      descriptor.value = this.createEventHandler(
+        sourceService,
+        eventType,
+        handlerType,
+        propertyKey,
+        originalFunction,
+        reliableDelivery,
+        requeueOnError
+      );
+    };
+  };
+
+  public createEventHandler = async (
+    sourceService: string,
+    eventType: string,
+    handlerType: EventHandlerType,
+    handlerName: string,
+    handlerFunction: (msg: any) => any,
+    reliableDelivery: boolean,
+    requeueOnError: boolean
+  ) => {
+    let exclusive = false;
+    const serviceName = this.serviceName;
+    let queueName;
+    if (handlerType === EventHandlerType.SERVICE_POOL) {
+      queueName = `evt-${sourceService}-${eventType}--${serviceName}.${handlerName}`;
+    } else if (handlerType === EventHandlerType.SINGLETON) {
+      queueName = `evt-${sourceService}-${eventType}`;
+    } else {
+      if (reliableDelivery) {
+        throw new EventHandlerConfigurationError(
+          `You are using the default broadcast identifier 
+          which is not compatible with reliable delivery.`
+        );
+      }
+      queueName = `evt-${sourceService}-${eventType}--${serviceName}.${handlerName}-${uuid()}`;
+    }
+    console.log('queueName: ', queueName);
+    const exchangeName = `${sourceService}.events`;
+    /**
+     * queues for handlers without reliable delivery should be marked as
+     * autoDelete so they're removed when the consumer disconnects
+     */
+    const autoDelete = !requeueOnError;
+    exclusive = handlerType === EventHandlerType.BROADCAST;
+    if (reliableDelivery) {
+      exclusive = false;
+    }
+
+    const eventChannel = await this.connection.createChannel();
+    eventChannel.on('close', () => {
+      this.logger(`event channel ${queueName} close`);
+      this.reestablishConnection();
+    });
+    eventChannel.on('error', () => {
+      this.logger(`event channel ${queueName} error`);
+      this.reestablishConnection();
+    });
+    this.eventChannels.push(eventChannel);
+    const eventExchange = await eventChannel.assertExchange(
+      exchangeName,
+      'topic',
+      {
+        durable: true,
+        autoDelete: true,
+      }
+    );
+    const eventQueue = await eventChannel.assertQueue(queueName, {
+      autoDelete,
+      exclusive,
+      durable: true,
+    });
+    await this.channel.bindQueue(
+      eventQueue.queue,
+      eventExchange.exchange,
+      eventType
+    );
+    await this.channel.consume(
+      eventQueue.queue,
+      message => {
+        const messageContent = this.parseMessage(message);
+        handlerFunction(messageContent);
+      },
+      {
+        noAck: true,
       }
     );
   };
@@ -209,7 +327,7 @@ export class Kinopio {
           replyTo: this.replyToId,
           headers: workerCtx,
           contentEncoding: 'utf-8',
-          contentType: workerCtx['content_type'] || 'application/xjson', 
+          contentType: workerCtx['content_type'] || 'application/xjson',
           deliveryMode: 2,
           priority: 0,
         }
@@ -217,12 +335,11 @@ export class Kinopio {
     });
   };
 
-  protected consumeQueue = (message) => {
+  protected consumeQueue = message => {
     const { correlationId } = message.properties;
 
     if (correlationId in this.rpcResolvers) {
-      const rawMessageContent = message.content.toString();
-      const messageContent = JSON.parse(rawMessageContent, parseXJson);
+      const messageContent = this.parseMessage(message);
 
       const resolver = this.rpcResolvers[correlationId];
       this.rpcResolvers[correlationId] = undefined;
@@ -291,6 +408,12 @@ export class Kinopio {
     this.numAttempts = 0;
     await this.userCallbackOnConnect(this.connection, this.channel);
   };
+
+  protected parseMessage(message: any) {
+    const rawMessageContent = message.content.toString();
+    const messageContent = JSON.parse(rawMessageContent, parseXJson);
+    return messageContent;
+  }
 
   protected reestablishConnection() {
     if (this.reconnectLock) {
