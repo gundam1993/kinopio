@@ -64,10 +64,10 @@ export interface RpcPayload {
   kwargs?: object;
 }
 
-export type rpcMethod<T = any> = (payload?: RpcPayload) => Promise<T>;
+export type RpcMethod<T = any> = (payload?: RpcPayload) => Promise<T>;
 
 export interface ServiceBase {
-  [key: string]: rpcMethod | any;
+  [key: string]: RpcMethod | any;
 }
 
 interface RpcContextBase {
