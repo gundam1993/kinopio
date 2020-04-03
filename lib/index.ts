@@ -242,7 +242,6 @@ export class Kinopio {
       }
       queueName = `evt-${sourceService}-${eventType}--${serviceName}.${handlerName}-${uuid()}`;
     }
-    console.log('queueName: ', queueName);
     const exchangeName = `${sourceService}.events`;
     /**
      * queues for handlers without reliable delivery should be marked as
