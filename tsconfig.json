@@ -9,7 +9,8 @@
     "outDir": "lib",
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "inlineSourceMap": true
+    "inlineSourceMap": true,
+    "strict": true
   },
   "files": ["lib/index.ts"],
   "include": ["lib/index.ts"]

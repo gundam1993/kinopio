@@ -1,4 +1,5 @@
 import * as amqp from 'amqplib';
+import "reflect-metadata";
 export declare enum EventHandlerType {
     SERVICE_POOL = 0,
     SINGLETON = 1,
@@ -6,9 +7,9 @@ export declare enum EventHandlerType {
 }
 export declare class RpcError extends Error {
     code: string;
-    remoteArgs: string[];
-    remoteName: string;
-    remoteFullName: string;
+    remoteArgs?: string[];
+    remoteName?: string;
+    remoteFullName?: string;
     constructor(message: string, remoteArgs?: string[], remoteName?: string, remoteFullName?: string);
 }
 export interface RpcPayload {
@@ -41,6 +42,14 @@ export interface KinopioConfig {
     reconnectInterval?: number;
     reconnectMaxAttemptes?: number;
 }
+export interface EventHandlerDefinition {
+    sourceService: string;
+    eventType: string;
+    handlerType: EventHandlerType;
+    reliableDelivery: boolean;
+    requeueOnError: boolean;
+    methodName: string | symbol;
+}
 export declare class Kinopio {
     private serviceName;
     private mqOptions;
@@ -59,13 +68,14 @@ export declare class Kinopio {
     private reconnectInterval;
     private reconnectMaxAttemptes;
     private numAttempts;
+    static eventHandlers: amqp.Channel[];
     constructor(serviceName: string, config: KinopioConfig);
     connect(): Promise<RpcContext>;
     close(): Promise<void>;
     buildRpcProxy: (workerCtx?: {}) => any;
     rpcEventHandler: (sourceService: string, eventType: string, handlerType?: EventHandlerType, reliableDelivery?: boolean, requeueOnError?: boolean) => MethodDecorator;
-    createEventHandler: (sourceService: string, eventType: string, handlerType: EventHandlerType, handlerName: string, handlerFunction: (msg: any) => any, reliableDelivery: boolean, requeueOnError: boolean) => Promise<void>;
-    protected callRpc: (serviceName: string, functionName: string, payload?: RpcPayload, workerCtx?: object) => Promise<unknown>;
+    createEventHandler: (sourceService: string, eventType: string, handlerType: EventHandlerType, handlerName: string | symbol, handlerFunction: (msg: any) => any, reliableDelivery: boolean, requeueOnError: boolean) => Promise<void>;
+    protected callRpc: (serviceName: string, functionName: string, payload?: RpcPayload, workerCtx?: any) => Promise<unknown>;
     protected consumeQueue: (message: any) => void;
     protected connectMq: () => Promise<void>;
     protected parseMessage(message: any): any;

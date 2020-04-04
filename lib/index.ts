@@ -1,5 +1,6 @@
 import * as uuid from 'uuid/v4';
 import * as amqp from 'amqplib';
+import "reflect-metadata";
 
 interface EntrypointsHooks {
   processResponse?: (response: any) => any;
@@ -19,9 +20,9 @@ export enum EventHandlerType {
 
 export class RpcError extends Error {
   code: string;
-  remoteArgs: string[];
-  remoteName: string;
-  remoteFullName: string;
+  remoteArgs?: string[];
+  remoteName?: string;
+  remoteFullName?: string;
 
   constructor(
     message: string,
@@ -42,12 +43,12 @@ export class RpcError extends Error {
 }
 
 class EventHandlerConfigurationError extends Error {
-  constructor(message) {
+  constructor(message:string) {
     super(message);
   }
 }
 
-function parseXJson(_, value) {
+function parseXJson(_:any, value:any) {
   if (typeof value === 'string') {
     const stringableMatches = value.match(/^\!\!(datetime|date|decimal) (.*)/);
     let parsedValue = value;
@@ -99,21 +100,34 @@ export interface KinopioConfig {
   reconnectMaxAttemptes?: number;
 }
 
+export interface EventHandlerDefinition {
+  sourceService: string,
+  eventType: string,
+  handlerType: EventHandlerType
+  reliableDelivery: boolean
+  requeueOnError: boolean
+  methodName: string | symbol
+}
+
 export class Kinopio {
   private serviceName: string = 'kinopio';
   private mqOptions: amqp.Options.Connect;
-  private connection: amqp.Connection;
-  private channel: amqp.Channel;
+  private connection: amqp.Connection | undefined;
+  private channel: amqp.Channel | undefined;
   private eventChannels: amqp.Channel[];
   private entrypointHooks: EntrypointsHooks;
   private queuePrefix: string;
   private rpcResolvers: any = {};
   private replyToId: string;
-  private logger;
-  private requestLogger;
-  private responseLogger;
+  private logger: (message?: any, ...optionalParams: any[]) => any;
+  private requestLogger: (msg: string, correlationId:string,
+    routingKey:string,
+    rpcPayload?:any) => any;
+  private responseLogger: (msg: string, correlationId:string,
+    routingKey:string,
+    rpcPayload?:any) => any;
   private reconnectLock: boolean = false;
-  private userCallbackOnConnect;
+  private userCallbackOnConnect: any;
   private reconnectInterval: number;
   private reconnectMaxAttemptes: number;
   private numAttempts: number = 0;
@@ -146,7 +160,7 @@ export class Kinopio {
     this.logger = logger;
     this.requestLogger = requestLogger || this.logger;
     this.responseLogger = responseLogger || this.logger;
-    this.userCallbackOnConnect = onConnect || (() => {});
+    this.userCallbackOnConnect = onConnect || (() => {return});
     this.reconnectInterval = reconnectInterval || 2000;
     this.reconnectMaxAttemptes = reconnectMaxAttemptes || 10;
     this.eventChannels = [];
@@ -158,9 +172,9 @@ export class Kinopio {
 
   public async close(): Promise<void> {
     this.logger('disconnectiong from smqp server...');
-    await this.channel.close();
+    await this.channel?.close();
     this.channel = undefined;
-    await this.connection.close();
+    await this.connection?.close();
     this.connection = undefined;
     this.logger('amqp server disconnected');
   }
@@ -177,7 +191,7 @@ export class Kinopio {
             { serviceName },
             {
               get: (serviceTarget, functionName) => {
-                return payload =>
+                return (payload:any) =>
                   this.callRpc(
                     serviceTarget.serviceName.toString(),
                     functionName.toString(),
@@ -200,20 +214,23 @@ export class Kinopio {
     requeueOnError: boolean = false
   ): MethodDecorator => {
     return (
-      _,
-      propertyKey: string,
-      descriptor: PropertyDescriptor
+      target,
+      propertyKey: string | symbol,
     ): void => {
-      const originalFunction = descriptor.value;
-      descriptor.value = this.createEventHandler(
+      if (!Reflect.hasMetadata('eventHandlers', target.constructor)) {
+        Reflect.defineMetadata('eventHandlers', [], target.constructor);
+      }
+      const eventHandlers = Reflect.getMetadata('eventHandlers', target.constructor) as EventHandlerDefinition[];
+
+      eventHandlers.push({
         sourceService,
         eventType,
         handlerType,
-        propertyKey,
-        originalFunction,
         reliableDelivery,
-        requeueOnError
-      );
+        requeueOnError,
+        methodName: propertyKey
+      });
+      Reflect.defineMetadata('eventHandlers', eventHandlers, target.constructor);
     };
   };
 
@@ -221,16 +238,17 @@ export class Kinopio {
     sourceService: string,
     eventType: string,
     handlerType: EventHandlerType,
-    handlerName: string,
+    handlerName: string | symbol,
     handlerFunction: (msg: any) => any,
     reliableDelivery: boolean,
     requeueOnError: boolean
   ) => {
     let exclusive = false;
     const serviceName = this.serviceName;
-    let queueName;
+    let queueName: string;
+    const handlerNameString = handlerName.toString();
     if (handlerType === EventHandlerType.SERVICE_POOL) {
-      queueName = `evt-${sourceService}-${eventType}--${serviceName}.${handlerName}`;
+      queueName = `evt-${sourceService}-${eventType}--${serviceName}.${handlerNameString}`;
     } else if (handlerType === EventHandlerType.SINGLETON) {
       queueName = `evt-${sourceService}-${eventType}`;
     } else {
@@ -240,7 +258,7 @@ export class Kinopio {
           which is not compatible with reliable delivery.`
         );
       }
-      queueName = `evt-${sourceService}-${eventType}--${serviceName}.${handlerName}-${uuid()}`;
+      queueName = `evt-${sourceService}-${eventType}--${serviceName}.${handlerNameString}-${uuid()}`;
     }
     const exchangeName = `${sourceService}.events`;
     /**
@@ -252,7 +270,9 @@ export class Kinopio {
     if (reliableDelivery) {
       exclusive = false;
     }
-
+    if (!this.connection) {
+      return
+    }
     const eventChannel = await this.connection.createChannel();
     eventChannel.on('close', () => {
       this.logger(`event channel ${queueName} close`);
@@ -263,7 +283,7 @@ export class Kinopio {
       this.reestablishConnection();
     });
     this.eventChannels.push(eventChannel);
-    const eventExchange = await eventChannel.assertExchange(
+    const eventExchange = await eventChannel?.assertExchange(
       exchangeName,
       'topic',
       {
@@ -276,12 +296,12 @@ export class Kinopio {
       exclusive,
       durable: true,
     });
-    await this.channel.bindQueue(
+    await eventChannel.bindQueue(
       eventQueue.queue,
       eventExchange.exchange,
       eventType
     );
-    await this.channel.consume(
+    await eventChannel.consume(
       eventQueue.queue,
       message => {
         const messageContent = this.parseMessage(message);
@@ -297,11 +317,14 @@ export class Kinopio {
     serviceName: string,
     functionName: string,
     payload: RpcPayload = {},
-    workerCtx: object = {}
+    workerCtx: any = {}
   ) => {
     const routingKey = `${serviceName}.${functionName}`;
     const correlationId = uuid();
     return new Promise((resolve, reject) => {
+      if (!this.channel) {
+        reject("Channel not ready")
+      }
       this.rpcResolvers[correlationId] = { resolve, reject };
       const { args = [], kwargs = {} } = payload;
       const rpcPayload = { args, kwargs };
@@ -315,9 +338,9 @@ export class Kinopio {
         routingKey,
         rpcPayload
       );
-      this.requestLogger('workerCtx: %o', workerCtx);
+      this.logger('workerCtx: %o', workerCtx);
 
-      this.channel.publish(
+      this.channel!.publish(
         'nameko-rpc',
         routingKey,
         new Buffer(JSON.stringify(rpcPayload)),
@@ -326,7 +349,7 @@ export class Kinopio {
           replyTo: this.replyToId,
           headers: workerCtx,
           contentEncoding: 'utf-8',
-          contentType: workerCtx['content_type'] || 'application/xjson',
+          contentType: workerCtx.content_type || 'application/xjson',
           deliveryMode: 2,
           priority: 0,
         }
@@ -334,7 +357,7 @@ export class Kinopio {
     });
   };
 
-  protected consumeQueue = message => {
+  protected consumeQueue = (message:any) => {
     const { correlationId } = message.properties;
 
     if (correlationId in this.rpcResolvers) {
