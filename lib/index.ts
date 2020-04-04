@@ -7,7 +7,7 @@ interface EntrypointsHooks {
   onRequest?: (
     serviceName: string,
     functionName: string,
-    rpcPayload: object
+    rpcPayload: object,
   ) => void;
 }
 
@@ -27,7 +27,7 @@ export class RpcError extends Error {
     message: string,
     remoteArgs?: string[],
     remoteName?: string,
-    remoteFullName?: string
+    remoteFullName?: string,
   ) {
     super(message);
     this.code = 'RPC_REMOTE_ERROR';
@@ -42,12 +42,12 @@ export class RpcError extends Error {
 }
 
 class EventHandlerConfigurationError extends Error {
-  constructor(message:string) {
+  constructor(message: string) {
     super(message);
   }
 }
 
-function parseXJson(_:any, value:any) {
+function parseXJson(_: any, value: any) {
   if (typeof value === 'string') {
     const stringableMatches = value.match(/^\!\!(datetime|date|decimal) (.*)/);
     let parsedValue = value;
@@ -86,7 +86,7 @@ export interface KinopioConfig {
   onRequest?: (
     serviceName: string,
     functionName: string,
-    rpcPayload: object
+    rpcPayload: object,
   ) => void;
   onResponse?: (response: any) => void;
   processResponse?: (response: any) => any;
@@ -97,6 +97,16 @@ export interface KinopioConfig {
   onConnect?: (connection: amqp.Connection, channel: amqp.Channel) => any;
   reconnectInterval?: number;
   reconnectMaxAttemptes?: number;
+}
+
+export interface EventHandlerArgs {
+  sourceService: string;
+  eventType: string;
+  handlerType: EventHandlerType;
+  handlerName: string | symbol;
+  handlerFunction: (msg: any) => any;
+  reliableDelivery: boolean;
+  requeueOnError: boolean;
 }
 
 export class Kinopio {
@@ -110,17 +120,24 @@ export class Kinopio {
   private rpcResolvers: any = {};
   private replyToId: string;
   private logger: (message?: any, ...optionalParams: any[]) => any;
-  private requestLogger: (msg: string, correlationId:string,
-    routingKey:string,
-    rpcPayload?:any) => any;
-  private responseLogger: (msg: string, correlationId:string,
-    routingKey:string,
-    rpcPayload?:any) => any;
+  private requestLogger: (
+    msg: string,
+    correlationId: string,
+    routingKey: string,
+    rpcPayload?: any,
+  ) => any;
+  private responseLogger: (
+    msg: string,
+    correlationId: string,
+    routingKey: string,
+    rpcPayload?: any,
+  ) => any;
   private reconnectLock: boolean = false;
   private userCallbackOnConnect: any;
   private reconnectInterval: number;
   private reconnectMaxAttemptes: number;
   private numAttempts: number = 0;
+  private eventChannelsArgs: EventHandlerArgs[];
 
   constructor(serviceName: string = 'kinopio', config: KinopioConfig) {
     if (!config) throw new Error('Kinopio requires options.');
@@ -150,14 +167,25 @@ export class Kinopio {
     this.logger = logger;
     this.requestLogger = requestLogger || this.logger;
     this.responseLogger = responseLogger || this.logger;
-    this.userCallbackOnConnect = onConnect || (() => {return});
+    this.userCallbackOnConnect =
+      onConnect ||
+      (() => {
+        return;
+      });
     this.reconnectInterval = reconnectInterval || 2000;
     this.reconnectMaxAttemptes = reconnectMaxAttemptes || 10;
     this.eventChannels = [];
+    this.eventChannelsArgs = [];
   }
 
   public async connect(): Promise<RpcContext> {
     await this.connectMq();
+    if (this.eventChannelsArgs.length) {
+      this.eventChannelsArgs.forEach((element) => {
+        this.createEventHandler(element);
+      });
+      this.eventChannelsArgs = [];
+    }
   }
 
   public async close(): Promise<void> {
@@ -181,18 +209,18 @@ export class Kinopio {
             { serviceName },
             {
               get: (serviceTarget, functionName) => {
-                return (payload:any) =>
+                return (payload: any) =>
                   this.callRpc(
                     serviceTarget.serviceName.toString(),
                     functionName.toString(),
                     payload,
-                    target.workerCtx
+                    target.workerCtx,
                   );
               },
-            }
+            },
           );
         },
-      }
+      },
     );
   };
 
@@ -206,30 +234,31 @@ export class Kinopio {
     return (
       target,
       propertyKey: string | symbol,
-      descriptor: PropertyDescriptor
+      descriptor: PropertyDescriptor,
     ): void => {
       const originalFunction = descriptor.value;
-      this.createEventHandler(
+      this.createEventHandler({
         sourceService,
         eventType,
         handlerType,
-        propertyKey,
-        originalFunction.bind(target),
         reliableDelivery,
-        requeueOnError
-      );
+        requeueOnError,
+        handlerName: propertyKey,
+        handlerFunction: originalFunction.bind(target),
+      });
     };
   };
 
-  public createEventHandler = async (
-    sourceService: string,
-    eventType: string,
-    handlerType: EventHandlerType,
-    handlerName: string | symbol,
-    handlerFunction: (msg: any) => any,
-    reliableDelivery: boolean,
-    requeueOnError: boolean
-  ) => {
+  public createEventHandler = async (eventHandlerInfo: EventHandlerArgs) => {
+    const {
+      sourceService,
+      eventType,
+      handlerType,
+      handlerName,
+      handlerFunction,
+      reliableDelivery,
+      requeueOnError,
+    } = eventHandlerInfo;
     let exclusive = false;
     const serviceName = this.serviceName;
     let queueName: string;
@@ -242,7 +271,7 @@ export class Kinopio {
       if (reliableDelivery) {
         throw new EventHandlerConfigurationError(
           `You are using the default broadcast identifier 
-          which is not compatible with reliable delivery.`
+          which is not compatible with reliable delivery.`,
         );
       }
       queueName = `evt-${sourceService}-${eventType}--${serviceName}.${handlerNameString}-${uuid()}`;
@@ -258,7 +287,8 @@ export class Kinopio {
       exclusive = false;
     }
     if (!this.connection) {
-      return
+      this.eventChannelsArgs.push(eventHandlerInfo);
+      return;
     }
     const eventChannel = await this.connection.createChannel();
     eventChannel.on('close', () => {
@@ -276,7 +306,7 @@ export class Kinopio {
       {
         durable: true,
         autoDelete: true,
-      }
+      },
     );
     const eventQueue = await eventChannel.assertQueue(queueName, {
       autoDelete,
@@ -286,17 +316,17 @@ export class Kinopio {
     await eventChannel.bindQueue(
       eventQueue.queue,
       eventExchange.exchange,
-      eventType
+      eventType,
     );
     await eventChannel.consume(
       eventQueue.queue,
-      message => {
+      (message) => {
         const messageContent = this.parseMessage(message);
         handlerFunction(messageContent);
       },
       {
         noAck: true,
-      }
+      },
     );
   };
 
@@ -304,13 +334,13 @@ export class Kinopio {
     serviceName: string,
     functionName: string,
     payload: RpcPayload = {},
-    workerCtx: any = {}
+    workerCtx: any = {},
   ) => {
     const routingKey = `${serviceName}.${functionName}`;
     const correlationId = uuid();
     return new Promise((resolve, reject) => {
       if (!this.channel) {
-        reject("Channel not ready")
+        reject('Channel not ready');
       }
       this.rpcResolvers[correlationId] = { resolve, reject };
       const { args = [], kwargs = {} } = payload;
@@ -323,7 +353,7 @@ export class Kinopio {
         '%s: %s() payload: %o',
         correlationId,
         routingKey,
-        rpcPayload
+        rpcPayload,
       );
       this.logger('workerCtx: %o', workerCtx);
 
@@ -339,12 +369,12 @@ export class Kinopio {
           contentType: workerCtx.content_type || 'application/xjson',
           deliveryMode: 2,
           priority: 0,
-        }
+        },
       );
     });
   };
 
-  protected consumeQueue = (message:any) => {
+  protected consumeQueue = (message: any) => {
     const { correlationId } = message.properties;
 
     if (correlationId in this.rpcResolvers) {
@@ -361,13 +391,13 @@ export class Kinopio {
             messageContent.error.value,
             messageContent.error.exc_args,
             messageContent.error.exc_type,
-            messageContent.error.exc_path
-          )
+            messageContent.error.exc_path,
+          ),
         );
       } else {
         if (this.entrypointHooks.processResponse) {
           messageContent.result = this.entrypointHooks.processResponse(
-            messageContent.result
+            messageContent.result,
           );
         }
         this.entrypointHooks.onResponse &&
@@ -400,7 +430,7 @@ export class Kinopio {
       this.reestablishConnection();
     });
     this.logger(
-      `connected to amqp server: amqp://${this.mqOptions.hostname}:${this.mqOptions.port}/${this.mqOptions.vhost}`
+      `connected to amqp server: amqp://${this.mqOptions.hostname}:${this.mqOptions.port}/${this.mqOptions.vhost}`,
     );
 
     const queueName = `${this.queuePrefix}-${this.replyToId}`;
@@ -430,15 +460,16 @@ export class Kinopio {
     }
     this.reconnectLock = true;
     this.logger(
-      `connection closed, try to connect in ${this.reconnectInterval /
-        1000} seconds`
+      `connection closed, try to connect in ${
+        this.reconnectInterval / 1000
+      } seconds`,
     );
     setTimeout(this.reconnect, this.reconnectInterval);
   }
 
   protected reconnect = async () => {
     this.logger(
-      `trying to reconnect to amqp://${this.mqOptions.hostname}:${this.mqOptions.port}/${this.mqOptions.vhost}`
+      `trying to reconnect to amqp://${this.mqOptions.hostname}:${this.mqOptions.port}/${this.mqOptions.vhost}`,
     );
     this.numAttempts += 1;
     const timeout =
@@ -449,14 +480,14 @@ export class Kinopio {
     } catch (error) {
       if (this.numAttempts === this.reconnectMaxAttemptes) {
         this.logger(
-          `failed to reconnect after ${this.reconnectMaxAttemptes} tries`
+          `failed to reconnect after ${this.reconnectMaxAttemptes} tries`,
         );
         throw new Error(
-          `AMQP disconnected after ${this.reconnectMaxAttemptes} attempts`
+          `AMQP disconnected after ${this.reconnectMaxAttemptes} attempts`,
         );
       }
       this.logger(
-        `could not connect, trying again in ${timeout / 1000} seconds`
+        `could not connect, trying again in ${timeout / 1000} seconds`,
       );
       setTimeout(this.reconnect, this.reconnectInterval);
     }

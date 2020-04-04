@@ -41,6 +41,15 @@ export interface KinopioConfig {
     reconnectInterval?: number;
     reconnectMaxAttemptes?: number;
 }
+export interface EventHandlerArgs {
+    sourceService: string;
+    eventType: string;
+    handlerType: EventHandlerType;
+    handlerName: string | symbol;
+    handlerFunction: (msg: any) => any;
+    reliableDelivery: boolean;
+    requeueOnError: boolean;
+}
 export declare class Kinopio {
     private serviceName;
     private mqOptions;
@@ -59,12 +68,13 @@ export declare class Kinopio {
     private reconnectInterval;
     private reconnectMaxAttemptes;
     private numAttempts;
+    private eventChannelsArgs;
     constructor(serviceName: string, config: KinopioConfig);
     connect(): Promise<RpcContext>;
     close(): Promise<void>;
     buildRpcProxy: (workerCtx?: {}) => any;
     rpcEventHandler: (sourceService: string, eventType: string, handlerType?: EventHandlerType, reliableDelivery?: boolean, requeueOnError?: boolean) => MethodDecorator;
-    createEventHandler: (sourceService: string, eventType: string, handlerType: EventHandlerType, handlerName: string | symbol, handlerFunction: (msg: any) => any, reliableDelivery: boolean, requeueOnError: boolean) => Promise<void>;
+    createEventHandler: (eventHandlerInfo: EventHandlerArgs) => Promise<void>;
     protected callRpc: (serviceName: string, functionName: string, payload?: RpcPayload, workerCtx?: any) => Promise<unknown>;
     protected consumeQueue: (message: any) => void;
     protected connectMq: () => Promise<void>;

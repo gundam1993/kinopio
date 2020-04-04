@@ -9,6 +9,7 @@ payload.json
 coverage
 nameko-test-service
 lib/__tests__
+lib/amqp
 jest.config.json
 .env
 .github/
