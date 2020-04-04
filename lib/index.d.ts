@@ -1,5 +1,4 @@
 import * as amqp from 'amqplib';
-import "reflect-metadata";
 export declare enum EventHandlerType {
     SERVICE_POOL = 0,
     SINGLETON = 1,
@@ -42,14 +41,6 @@ export interface KinopioConfig {
     reconnectInterval?: number;
     reconnectMaxAttemptes?: number;
 }
-export interface EventHandlerDefinition {
-    sourceService: string;
-    eventType: string;
-    handlerType: EventHandlerType;
-    reliableDelivery: boolean;
-    requeueOnError: boolean;
-    methodName: string | symbol;
-}
 export declare class Kinopio {
     private serviceName;
     private mqOptions;
@@ -68,7 +59,6 @@ export declare class Kinopio {
     private reconnectInterval;
     private reconnectMaxAttemptes;
     private numAttempts;
-    static eventHandlers: amqp.Channel[];
     constructor(serviceName: string, config: KinopioConfig);
     connect(): Promise<RpcContext>;
     close(): Promise<void>;

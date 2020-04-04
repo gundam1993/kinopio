@@ -1,6 +1,5 @@
 import * as uuid from 'uuid/v4';
 import * as amqp from 'amqplib';
-import "reflect-metadata";
 
 interface EntrypointsHooks {
   processResponse?: (response: any) => any;
@@ -98,15 +97,6 @@ export interface KinopioConfig {
   onConnect?: (connection: amqp.Connection, channel: amqp.Channel) => any;
   reconnectInterval?: number;
   reconnectMaxAttemptes?: number;
-}
-
-export interface EventHandlerDefinition {
-  sourceService: string,
-  eventType: string,
-  handlerType: EventHandlerType
-  reliableDelivery: boolean
-  requeueOnError: boolean
-  methodName: string | symbol
 }
 
 export class Kinopio {
@@ -211,26 +201,23 @@ export class Kinopio {
     eventType: string,
     handlerType: EventHandlerType = EventHandlerType.SERVICE_POOL,
     reliableDelivery: boolean = true,
-    requeueOnError: boolean = false
+    requeueOnError: boolean = false,
   ): MethodDecorator => {
     return (
       target,
       propertyKey: string | symbol,
+      descriptor: PropertyDescriptor
     ): void => {
-      if (!Reflect.hasMetadata('eventHandlers', target.constructor)) {
-        Reflect.defineMetadata('eventHandlers', [], target.constructor);
-      }
-      const eventHandlers = Reflect.getMetadata('eventHandlers', target.constructor) as EventHandlerDefinition[];
-
-      eventHandlers.push({
+      const originalFunction = descriptor.value;
+      this.createEventHandler(
         sourceService,
         eventType,
         handlerType,
+        propertyKey,
+        originalFunction.bind(target),
         reliableDelivery,
-        requeueOnError,
-        methodName: propertyKey
-      });
-      Reflect.defineMetadata('eventHandlers', eventHandlers, target.constructor);
+        requeueOnError
+      );
     };
   };
 
