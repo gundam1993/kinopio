@@ -100,6 +100,7 @@ export interface KinopioConfig {
 }
 
 export interface EventHandlerArgs {
+  target: any;
   sourceService: string;
   eventType: string;
   handlerType: EventHandlerType;
@@ -182,6 +183,7 @@ export class Kinopio {
     await this.connectMq();
     if (this.eventChannelsArgs.length) {
       this.eventChannelsArgs.forEach((element) => {
+        element.handlerFunction = element.handlerFunction.bind(element.target)
         this.createEventHandler(element);
       });
       this.eventChannelsArgs = [];
@@ -238,6 +240,7 @@ export class Kinopio {
     ): void => {
       const originalFunction = descriptor.value;
       this.createEventHandler({
+        target,
         sourceService,
         eventType,
         handlerType,

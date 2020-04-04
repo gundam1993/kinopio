@@ -42,6 +42,7 @@ export interface KinopioConfig {
     reconnectMaxAttemptes?: number;
 }
 export interface EventHandlerArgs {
+    target: any;
     sourceService: string;
     eventType: string;
     handlerType: EventHandlerType;
