@@ -1,5 +1,4 @@
 *.pyc
-dist
 yarn-error.log
 *-rsa
 payload.json
@@ -13,3 +12,4 @@ lib/amqp
 jest.config.json
 .env
 .github/
+amqp.ts

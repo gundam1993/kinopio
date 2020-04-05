@@ -47,6 +47,16 @@ class EventHandlerConfigurationError extends Error {
   }
 }
 
+export interface RpcEventHandlerMethodInfo {
+  sourceService: string;
+  eventType: string;
+  handlerType: EventHandlerType;
+  reliableDelivery: boolean;
+  requeueOnError: boolean;
+  handlerName: any;
+  handlerFunction: any;
+}
+
 function parseXJson(_: any, value: any) {
   if (typeof value === 'string') {
     const stringableMatches = value.match(/^\!\!(datetime|date|decimal) (.*)/);
@@ -105,7 +115,7 @@ export interface EventHandlerArgs {
   eventType: string;
   handlerType: EventHandlerType;
   handlerName: string | symbol;
-  handlerFunction: (msg: any) => any;
+  handlerFunction: (msg: any, headers: any) => any;
   reliableDelivery: boolean;
   requeueOnError: boolean;
 }
@@ -183,7 +193,7 @@ export class Kinopio {
     await this.connectMq();
     if (this.eventChannelsArgs.length) {
       this.eventChannelsArgs.forEach((element) => {
-        element.handlerFunction = element.handlerFunction.bind(element.target)
+        element.handlerFunction = element.handlerFunction.bind(element.target);
         this.createEventHandler(element);
       });
       this.eventChannelsArgs = [];
@@ -226,34 +236,70 @@ export class Kinopio {
     );
   };
 
-  public rpcEventHandler = (
+  public rpcEventHandlerMethod = (
     sourceService: string,
     eventType: string,
     handlerType: EventHandlerType = EventHandlerType.SERVICE_POOL,
     reliableDelivery: boolean = true,
     requeueOnError: boolean = false,
   ): MethodDecorator => {
-    return (
-      target,
-      propertyKey: string | symbol,
-      descriptor: PropertyDescriptor,
-    ): void => {
-      const originalFunction = descriptor.value;
-      this.createEventHandler({
+    return (target, propertyKey: string | symbol, descriptor): void => {
+      const originalFunc = descriptor.value;
+      if (!Reflect.has(target, 'rpcEventHandlerMethods')) {
+        Reflect.set(target, 'rpcEventHandlerMethods', []);
+      }
+      if (!Reflect.has(target, 'createEventHandler')) {
+        Reflect.set(target, 'createEventHandler', this.createEventHandler);
+      }
+      const rpcEventHandlerMethods: RpcEventHandlerMethodInfo[] = Reflect.get(
         target,
+        'rpcEventHandlerMethods',
+      );
+      rpcEventHandlerMethods.push({
         sourceService,
         eventType,
         handlerType,
         reliableDelivery,
         requeueOnError,
-        handlerName: propertyKey,
-        handlerFunction: originalFunction.bind(target),
+        handlerName: propertyKey.toString(),
+        handlerFunction: originalFunc,
       });
+      Reflect.set(target, 'rpcEventHandlerMethods', rpcEventHandlerMethods);
     };
   };
 
+  public eventHandlerClasslogClass<T extends new (...args: any[]) => {}>(
+    constructor: T,
+  ) {
+    // tslint:disable-next-line: no-this-assignment
+    // const that = this
+    return class extends constructor {
+      constructor(...args: any[]) {
+        super(...args);
+        if (!Reflect.has(this, 'rpcEventHandlerMethods') || !Reflect.has(this, 'createEventHandler')) {
+          return;
+        }
+        const rpcEventHandlerMethods: RpcEventHandlerMethodInfo[] = Reflect.get(
+          this,
+          'rpcEventHandlerMethods',
+        );
+        const createEventHandler:any = Reflect.get(
+          this,
+          'createEventHandler',
+        );
+        rpcEventHandlerMethods.forEach((methods: RpcEventHandlerMethodInfo) => {
+          createEventHandler({
+            target: this,
+            ...methods,
+          });
+        });
+      }
+    };
+  }
+
   public createEventHandler = async (eventHandlerInfo: EventHandlerArgs) => {
     const {
+      target,
       sourceService,
       eventType,
       handlerType,
@@ -324,8 +370,17 @@ export class Kinopio {
     await eventChannel.consume(
       eventQueue.queue,
       (message) => {
-        const messageContent = this.parseMessage(message);
-        handlerFunction(messageContent);
+        let messageContent = this.parseMessage(message);
+        if (this.entrypointHooks.processResponse) {
+          messageContent = this.entrypointHooks.processResponse(messageContent);
+        }
+        this.requestLogger(
+          'event %s emitted by %s payload: %o',
+          eventType,
+          sourceService,
+          messageContent,
+        );
+        handlerFunction.apply(target, [messageContent, message?.properties.headers]);
       },
       {
         noAck: true,

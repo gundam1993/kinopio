@@ -1,15 +1,14 @@
 {
   "name": "kinopio",
-  "version": "1.1.5",
+  "version": "1.2.0",
   "description": "a node client for nameko",
-  "main": "lib/index.js",
-  "types": "lib/index.d.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
     "test": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json",
     "coverage": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json --coverage",
-    "build": "tsc",
-    "build-def": "tsc --declaration lib/index.ts",
-    "prepare": "yarn build && yarn build-def"
+    "build": "tsc --project tsconfig.json --declaration",
+    "prepare": "yarn build"
   },
   "author": "gundam1993 <gundam1993@gmail.com>",
   "keywords": [
@@ -31,7 +30,7 @@
     "tslint": "^5.19.0",
     "tslint-config-airbnb": "^5.11.1",
     "tslint-config-prettier": "^1.18.0",
-    "typescript": "^3.7.2"
+    "typescript": "^3.8.3"
   },
   "dependencies": {
     "amqplib": "^0.5.5",
