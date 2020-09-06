@@ -1,5 +1,6 @@
 import * as uuid from 'uuid/v4';
-import * as amqp from 'amqplib';
+import * as amqp from 'amqp-connection-manager';
+import { Channel, Connection, Options, ConfirmChannel } from 'amqplib';
 
 interface EntrypointsHooks {
   processResponse?: (response: any) => any;
@@ -104,9 +105,8 @@ export interface KinopioConfig {
   logger?: any;
   requestLogger?: any;
   responseLogger?: any;
-  onConnect?: (connection: amqp.Connection, channel: amqp.Channel) => any;
+  onConnect?: (connection: Connection, channel: Channel) => any;
   reconnectInterval?: number;
-  reconnectMaxAttemptes?: number;
 }
 
 export interface EventHandlerArgs {
@@ -122,10 +122,10 @@ export interface EventHandlerArgs {
 
 export class Kinopio {
   private serviceName: string = 'kinopio';
-  private mqOptions: amqp.Options.Connect;
-  private connection: amqp.Connection | undefined;
-  private channel: amqp.Channel | undefined;
-  private eventChannels: amqp.Channel[];
+  private mqOptions: Options.Connect;
+  private connection: amqp.AmqpConnectionManager | undefined;
+  private channel: amqp.ChannelWrapper | undefined;
+  private eventChannelsWrappers: amqp.ChannelWrapper[];
   private entrypointHooks: EntrypointsHooks;
   private queuePrefix: string;
   private rpcResolvers: any = {};
@@ -143,11 +143,8 @@ export class Kinopio {
     routingKey: string,
     rpcPayload?: any,
   ) => any;
-  private reconnectLock: boolean = false;
   private userCallbackOnConnect: any;
   private reconnectInterval: number;
-  private reconnectMaxAttemptes: number;
-  private numAttempts: number = 0;
   private eventChannelsArgs: EventHandlerArgs[];
 
   constructor(serviceName: string = 'kinopio', config: KinopioConfig) {
@@ -168,7 +165,6 @@ export class Kinopio {
       responseLogger,
       onConnect,
       reconnectInterval,
-      reconnectMaxAttemptes,
     } = config;
 
     this.mqOptions = { hostname, port, vhost, username, password };
@@ -183,9 +179,8 @@ export class Kinopio {
       (() => {
         return;
       });
-    this.reconnectInterval = reconnectInterval || 2000;
-    this.reconnectMaxAttemptes = reconnectMaxAttemptes || 10;
-    this.eventChannels = [];
+    this.reconnectInterval = reconnectInterval || 2;
+    this.eventChannelsWrappers = [];
     this.eventChannelsArgs = [];
   }
 
@@ -204,6 +199,9 @@ export class Kinopio {
     this.logger('disconnectiong from smqp server...');
     await this.channel?.close();
     this.channel = undefined;
+    await Promise.all(
+      this.eventChannelsWrappers.map(async (channel) => await channel.close()),
+    );
     await this.connection?.close();
     this.connection = undefined;
     this.logger('amqp server disconnected');
@@ -216,6 +214,11 @@ export class Kinopio {
         get: (target, serviceName) => {
           if (serviceName === 'workerCtx') {
             return target.workerCtx;
+          }
+          if (serviceName === 'dispatch') {
+            return (eventType: string, eventData: any) => {
+              this.dispatchEvent(eventType, eventData, workerCtx);
+            };
           }
           return new Proxy(
             { serviceName },
@@ -271,22 +274,20 @@ export class Kinopio {
   public eventHandlerClasslogClass<T extends new (...args: any[]) => {}>(
     constructor: T,
   ) {
-    // tslint:disable-next-line: no-this-assignment
-    // const that = this
     return class extends constructor {
       constructor(...args: any[]) {
         super(...args);
-        if (!Reflect.has(this, 'rpcEventHandlerMethods') || !Reflect.has(this, 'createEventHandler')) {
+        if (
+          !Reflect.has(this, 'rpcEventHandlerMethods') ||
+          !Reflect.has(this, 'createEventHandler')
+        ) {
           return;
         }
         const rpcEventHandlerMethods: RpcEventHandlerMethodInfo[] = Reflect.get(
           this,
           'rpcEventHandlerMethods',
         );
-        const createEventHandler:any = Reflect.get(
-          this,
-          'createEventHandler',
-        );
+        const createEventHandler: any = Reflect.get(this, 'createEventHandler');
         rpcEventHandlerMethods.forEach((methods: RpcEventHandlerMethodInfo) => {
           createEventHandler({
             target: this,
@@ -297,7 +298,29 @@ export class Kinopio {
     };
   }
 
-  public createEventHandler = async (eventHandlerInfo: EventHandlerArgs) => {
+  public rpcProvider<T extends new (...args: any[]) => {}>(constructor: T) {
+    return class extends constructor {
+      constructor(...args: any[]) {
+        super(...args);
+        if (!Reflect.has(this, 'rpcMethods')) {
+          return;
+        }
+        const rpcMethods: RpcEventHandlerMethodInfo[] = Reflect.get(
+          this,
+          'rpcMethods',
+        );
+        const createEventHandler: any = Reflect.get(this, 'createEventHandler');
+        rpcMethods.forEach((methods: RpcEventHandlerMethodInfo) => {
+          createEventHandler({
+            target: this,
+            ...methods,
+          });
+        });
+      }
+    };
+  }
+
+  protected createEventHandler = async (eventHandlerInfo: EventHandlerArgs) => {
     const {
       target,
       sourceService,
@@ -339,56 +362,72 @@ export class Kinopio {
       this.eventChannelsArgs.push(eventHandlerInfo);
       return;
     }
-    const eventChannel = await this.connection.createChannel();
-    eventChannel.on('close', () => {
-      this.logger(`event channel ${queueName} close`);
-      this.reestablishConnection();
-    });
-    eventChannel.on('error', () => {
-      this.logger(`event channel ${queueName} error`);
-      this.reestablishConnection();
-    });
-    this.eventChannels.push(eventChannel);
-    const eventExchange = await eventChannel?.assertExchange(
-      exchangeName,
-      'topic',
-      {
-        durable: true,
-        autoDelete: true,
-      },
-    );
-    const eventQueue = await eventChannel.assertQueue(queueName, {
-      autoDelete,
-      exclusive,
-      durable: true,
-    });
-    await eventChannel.bindQueue(
-      eventQueue.queue,
-      eventExchange.exchange,
-      eventType,
-    );
-    await eventChannel.consume(
-      eventQueue.queue,
-      (message) => {
-        let messageContent = this.parseMessage(message);
-        if (this.entrypointHooks.processResponse) {
-          messageContent = this.entrypointHooks.processResponse(messageContent);
-        }
-        this.requestLogger(
-          'event %s emitted by %s payload: %o',
-          eventType,
-          sourceService,
-          messageContent,
+    const eventChannelsWrapper = await this.connection.createChannel({
+      setup: async (eventChannel: ConfirmChannel) => {
+        const eventExchange = await eventChannel.assertExchange(
+          exchangeName,
+          'topic',
+          {
+            durable: true,
+            autoDelete: true,
+          },
         );
-        handlerFunction.apply(target, [messageContent, message?.properties.headers]);
+        const eventQueue = await eventChannel.assertQueue(queueName, {
+          autoDelete,
+          exclusive,
+          durable: true,
+        });
+        await eventChannel.bindQueue(
+          eventQueue.queue,
+          eventExchange.exchange,
+          eventType,
+        );
+        await eventChannel.consume(
+          eventQueue.queue,
+          (message) => {
+            let messageContent = this.parseMessage(message);
+            if (this.entrypointHooks.processResponse) {
+              messageContent = this.entrypointHooks.processResponse(
+                messageContent,
+              );
+            }
+            this.requestLogger(
+              'event %s emitted by %s payload: %o',
+              eventType,
+              sourceService,
+              messageContent,
+            );
+            handlerFunction.apply(target, [
+              messageContent,
+              message?.properties.headers,
+            ]);
+          },
+          {
+            noAck: true,
+          },
+        );
       },
+    });
+    this.eventChannelsWrappers.push(eventChannelsWrapper);
+  };
+
+  protected dispatchEvent = (
+    eventType: string,
+    eventData: any,
+    workerCtx: any = {},
+  ) => {
+    const exchangeName = `${this.serviceName}.events`;
+    this.channel!.publish(
+      exchangeName,
+      eventType,
+      Buffer.from(JSON.stringify(eventData)),
       {
-        noAck: true,
+        headers: workerCtx,
       },
     );
   };
 
-  protected callRpc = async (
+  protected callRpc = (
     serviceName: string,
     functionName: string,
     payload: RpcPayload = {},
@@ -418,7 +457,7 @@ export class Kinopio {
       this.channel!.publish(
         'nameko-rpc',
         routingKey,
-        new Buffer(JSON.stringify(rpcPayload)),
+        Buffer.from(JSON.stringify(rpcPayload)),
         {
           correlationId,
           replyTo: this.replyToId,
@@ -466,44 +505,29 @@ export class Kinopio {
   };
 
   protected connectMq = async (): Promise<void> => {
-    this.connection = await amqp.connect(this.mqOptions);
-
-    this.connection.on('close', () => {
-      this.logger('connection close');
-      this.reestablishConnection();
+    const url = `amqp://${this.mqOptions.hostname}:${this.mqOptions.port}/${this.mqOptions.vhost}`;
+    this.connection = await amqp.connect([url], {
+      connectionOptions: this.mqOptions,
+      reconnectTimeInSeconds: this.reconnectInterval,
     });
-
-    this.connection.on('error', () => {
-      this.logger('connection error');
-      this.reestablishConnection();
-    });
-
-    this.channel = await this.connection.createChannel();
-    this.channel.on('close', () => {
-      this.logger('channel close');
-      this.reestablishConnection();
-    });
-    this.channel.on('error', () => {
-      this.logger('channel error');
-      this.reestablishConnection();
-    });
-    this.logger(
-      `connected to amqp server: amqp://${this.mqOptions.hostname}:${this.mqOptions.port}/${this.mqOptions.vhost}`,
-    );
 
     const queueName = `${this.queuePrefix}-${this.replyToId}`;
-    const queueInfo = await this.channel.assertQueue(queueName, {
-      exclusive: true,
-      autoDelete: true,
-      durable: false,
-    });
 
-    await this.channel.bindQueue(queueInfo.queue, 'nameko-rpc', this.replyToId);
-    await this.channel.consume(queueInfo.queue, this.consumeQueue, {
-      noAck: true,
+    this.channel = this.connection.createChannel({
+      setup: async (channel: ConfirmChannel) => {
+        const queueInfo = await channel.assertQueue(queueName, {
+          exclusive: true,
+          autoDelete: true,
+          durable: false,
+        });
+        await channel.bindQueue(queueInfo.queue, 'nameko-rpc', this.replyToId);
+        await channel.consume(queueInfo.queue, this.consumeQueue, {
+          noAck: true,
+        });
+        await this.userCallbackOnConnect(this.connection, channel);
+        this.logger(`connected to amqp server: ${url}`);
+      },
     });
-    this.numAttempts = 0;
-    await this.userCallbackOnConnect(this.connection, this.channel);
   };
 
   protected parseMessage(message: any) {
@@ -511,43 +535,4 @@ export class Kinopio {
     const messageContent = JSON.parse(rawMessageContent, parseXJson);
     return messageContent;
   }
-
-  protected reestablishConnection() {
-    if (this.reconnectLock) {
-      return;
-    }
-    this.reconnectLock = true;
-    this.logger(
-      `connection closed, try to connect in ${
-        this.reconnectInterval / 1000
-      } seconds`,
-    );
-    setTimeout(this.reconnect, this.reconnectInterval);
-  }
-
-  protected reconnect = async () => {
-    this.logger(
-      `trying to reconnect to amqp://${this.mqOptions.hostname}:${this.mqOptions.port}/${this.mqOptions.vhost}`,
-    );
-    this.numAttempts += 1;
-    const timeout =
-      this.reconnectInterval + this.numAttempts * this.reconnectInterval;
-    try {
-      await this.connectMq();
-      this.reconnectLock = false;
-    } catch (error) {
-      if (this.numAttempts === this.reconnectMaxAttemptes) {
-        this.logger(
-          `failed to reconnect after ${this.reconnectMaxAttemptes} tries`,
-        );
-        throw new Error(
-          `AMQP disconnected after ${this.reconnectMaxAttemptes} attempts`,
-        );
-      }
-      this.logger(
-        `could not connect, trying again in ${timeout / 1000} seconds`,
-      );
-      setTimeout(this.reconnect, this.reconnectInterval);
-    }
-  };
 }

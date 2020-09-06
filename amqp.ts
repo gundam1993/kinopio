@@ -1,15 +1,16 @@
-import { Kinopio, EventHandlerType } from "./dist";
+import { Kinopio, EventHandlerType } from './dist';
 
 const hostname = 'localhost';
 const port = 5672;
 const vhost = '/';
 const username = 'guest';
 const password = 'guest';
-// const namekoWorkerCtx = {
-//   'nameko.authorization': 'testAuthorization',
-//   'nameko.language': 'en-us',
-//   'nameko.locale': 'en-us',
-// };
+const namekoWorkerCtx = {
+  'nameko.authorization': 'testAuthorization',
+  'nameko.language': 'en-us',
+  'nameko.locale': 'en-us',
+  'nameko.bbb': "asddsa"
+};
 
 function sleep(ms: number) {
   return new Promise((resolve) => {
@@ -38,58 +39,6 @@ export interface RpcEventHandlerMethodInfo {
   handlerFunction: any;
 }
 
-// const rpcEventHandlerMethod = (
-//   sourceService: string,
-//   eventType: string,
-//   handlerType: EventHandlerType = EventHandlerType.SERVICE_POOL,
-//   reliableDelivery: boolean = true,
-//   requeueOnError: boolean = false,
-// ): MethodDecorator => {
-//   return (target, propertyKey: string | symbol, descriptor): any => {
-//     const originalFunc = descriptor.value;
-//     if (!Reflect.has(target, 'rpcEventHandlerMethods')) {
-//       Reflect.set(target, 'rpcEventHandlerMethods', []);
-//     }
-//     const rpcEventHandlerMethods: RpcEventHandlerMethodInfo[] = Reflect.get(
-//       target,
-//       'rpcEventHandlerMethods',
-//     );
-//     rpcEventHandlerMethods.push({
-//       sourceService,
-//       eventType,
-//       handlerType,
-//       reliableDelivery,
-//       requeueOnError,
-//       handlerName: propertyKey.toString(),
-//       handlerFunction: originalFunc,
-//     });
-//     Reflect.set(target, 'rpcEventHandlerMethods', rpcEventHandlerMethods);
-//   };
-// };
-
-// function eventHandlerClasslogClass<T extends new (...args: any[]) => {}>(
-//   constructor: T,
-// ) {
-//   return class extends constructor {
-//     constructor(...args: any[]) {
-//       super(...args);
-//       if (!Reflect.has(this, 'rpcEventHandlerMethods')) {
-//         return;
-//       }
-//       const rpcEventHandlerMethods: RpcEventHandlerMethodInfo[] = Reflect.get(
-//         this,
-//         'rpcEventHandlerMethods',
-//       );
-//       rpcEventHandlerMethods.forEach((methods: RpcEventHandlerMethodInfo) => {
-//         kinopio.createEventHandler({
-//           target: this,
-//           ...methods,
-//         });
-//       });
-//     }
-//   };
-// }
-
 async function test() {
   @kinopio.eventHandlerClasslogClass
   class A {
@@ -114,58 +63,17 @@ async function test() {
 
   await sleep(100);
   await kinopio.connect();
-  // const rpc = await kinopio.buildRpcProxy(namekoWorkerCtx);
+  const rpc = await kinopio.buildRpcProxy(namekoWorkerCtx);
 
   const a = new A();
   a.eventHandlerFunc('asd');
-  // const eventHandlers: EventHandlerDefinition[] = Reflect.get(
-  //   A,
-  //   'eventHandlers',
-  //   [],
-  // );
-  // eventHandlers.forEach((e) => {
-  //   kinopio.createEventHandler(
-  //     e.sourceService,
-  //     e.eventType,
-  //     e.handlerType,
-  //     e.methodName,
-  //     a.eventHandlerFunc.bind(a),
-  //     e.reliableDelivery,
-  //     e.requeueOnError,
-  //   );
-  // });
+
   await sleep(100);
   // rpc.properties.ping();
-  // rpc.tests.ping()
-  // rpc.tests.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
-  // rpc.files.ping()
+  await rpc.tests.ping();
+  rpc.dispatch('hahaha', { ha: true });
+  // await sleep(100);
   // kinopio.close()
-  // while (true) {
-  //   rpc.files.ping()
-  //   await sleep(100)
-  // }
 }
 
 test();

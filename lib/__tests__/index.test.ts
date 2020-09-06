@@ -1,25 +1,25 @@
-import { ServiceBase, rpcMethod, RpcContext, RpcError, Kinopio } from '..';
+import { ServiceBase, RpcMethod, RpcContext, RpcError, Kinopio } from '..';
 import { camelizeKeys } from 'humps';
 
 interface TestService extends ServiceBase {
-  ping: rpcMethod;
-  repeat: rpcMethod;
-  get_some_data: rpcMethod;
-  get_some_xjson_data: rpcMethod;
-  raise_noraml_exception: rpcMethod;
-  raise_custom_exception: rpcMethod;
-  return_worker_ctx: rpcMethod;
+  ping: RpcMethod;
+  repeat: RpcMethod;
+  get_some_data: RpcMethod;
+  get_some_xjson_data: RpcMethod;
+  raise_noraml_exception: RpcMethod;
+  raise_custom_exception: RpcMethod;
+  return_worker_ctx: RpcMethod;
 }
 
 interface TestContext {
-  test_service: TestService;
+  tests: TestService;
 }
 
-const hostname = process.env.RABBIT_SERVER;
-const port = parseInt(process.env.RABBIT_PORT, 10);
-const vhost = process.env.RABBIT_VHOST;
-const username = process.env.RABBIT_USER;
-const password = process.env.RABBIT_PASS;
+const hostname = process.env.RABBIT_SERVER || 'localhost';
+const port = parseInt(process.env.RABBIT_PORT || '5672', 10);
+const vhost = process.env.RABBIT_VHOST || '/';
+const username = process.env.RABBIT_USER || 'guest';
+const password = process.env.RABBIT_PASS || 'guest';
 const namekoWorkerCtx = {
   'nameko.authorization': 'testAuthorization',
   'nameko.language': 'en-us',
@@ -27,7 +27,7 @@ const namekoWorkerCtx = {
 };
 
 describe('rpc', () => {
-  const kinopio = new Kinopio({
+  const kinopio = new Kinopio('testClient', {
     hostname,
     port,
     vhost,
@@ -37,28 +37,29 @@ describe('rpc', () => {
     requestLogger: () => {},
     responseLogger: () => {},
   });
-  
+
   let rpc: RpcContext<TestContext>;
   beforeAll(async () => {
-    await kinopio.connect()
-    rpc = await kinopio.buildRpcProxy(namekoWorkerCtx)});
+    await kinopio.connect();
+    rpc = await kinopio.buildRpcProxy(namekoWorkerCtx);
+  });
   afterAll(() => kinopio.close());
 
   test('can make a basic rpc call', async () => {
-    await expect(rpc.test_service.ping()).resolves.toBe('pong');
+    await expect(rpc.tests.ping()).resolves.toBe('pong');
   });
 
   test('passes default args and kwargs', async () => {
     const args = [1, 2, 3];
     const kwargs = { foo: 'bar' };
-    await expect(rpc.test_service.repeat({ args, kwargs })).resolves.toEqual({
+    await expect(rpc.tests.repeat({ args, kwargs })).resolves.toEqual({
       args,
       kwargs,
     });
   });
 
   test('can get serialised data', async () => {
-    await expect(rpc.test_service.get_some_data()).resolves.toEqual({
+    await expect(rpc.tests.get_some_data()).resolves.toEqual({
       int: 1,
       float: 0.01,
       string: 'foo',
@@ -69,8 +70,7 @@ describe('rpc', () => {
   });
 
   test('can get serialised xjson data', async () => {
-    const result = await rpc.test_service.get_some_xjson_data()
-    console.log('result: ', result);
+    const result = await rpc.tests.get_some_xjson_data();
     expect(result).toEqual({
       datetime: '2018-01-01T01:01:01',
       date: '2018-05-29',
@@ -85,33 +85,31 @@ describe('rpc', () => {
   });
 
   test('rejects a normal exception', async () => {
-    await expect(
-      rpc.test_service.raise_noraml_exception()
-    ).rejects.toMatchObject(
+    await expect(rpc.tests.raise_noraml_exception()).rejects.toMatchObject(
       new RpcError(
         'normal exception',
         ['normal exception'],
         'Exception',
-        'builtins.Exception'
-      )
+        'builtins.Exception',
+      ),
     );
   });
 
   test('rejects a custom exception', async () => {
-    await expect(
-      rpc.test_service.raise_custom_exception()
-    ).rejects.toMatchObject(
+    await expect(rpc.tests.raise_custom_exception()).rejects.toMatchObject(
       new RpcError(
         'custom exception',
         ['custom exception'],
         'CustomException',
-        'service.CustomException'
-      )
+        'service.CustomException',
+      ),
     );
   });
 
   test('passes context', async () => {
-    await expect(rpc.test_service.return_worker_ctx()).resolves.toEqual({
+    const res = await rpc.tests.return_worker_ctx();
+    res.call_id_stack = undefined;
+    expect(res).toEqual({
       authorization: 'testAuthorization',
       language: 'en-us',
       locale: 'en-us',
@@ -132,7 +130,7 @@ describe('hooks', () => {
   const onResponse = jest.fn();
   const processResponse = jest.fn((result) => camelizeKeys(result));
 
-  const kinopio = new Kinopio({
+  const kinopio = new Kinopio('testClient', {
     hostname,
     port,
     vhost,
@@ -147,37 +145,38 @@ describe('hooks', () => {
   });
   let rpc: RpcContext<TestContext>;
   beforeAll(async () => {
-    await kinopio.connect()
-    rpc = await kinopio.buildRpcProxy(namekoWorkerCtx)});
+    await kinopio.connect();
+    rpc = await kinopio.buildRpcProxy(namekoWorkerCtx);
+  });
   afterAll(() => kinopio.close());
 
   test('calls onResquest', async () => {
-    await rpc.test_service.ping();
+    await rpc.tests.ping();
 
-    expect(onRequest).toHaveBeenCalledWith('test_service', 'ping', {
+    expect(onRequest).toHaveBeenCalledWith('tests', 'ping', {
       args: [],
       kwargs: {},
     });
   });
 
   test('call onResquest with args', async () => {
-    await rpc.test_service.repeat({ args: [1], kwargs: { foo: 'bar' } });
+    await rpc.tests.repeat({ args: [1], kwargs: { foo: 'bar' } });
 
-    expect(onRequest).toHaveBeenCalledWith('test_service', 'repeat', {
+    expect(onRequest).toHaveBeenCalledWith('tests', 'repeat', {
       args: [1],
       kwargs: { foo: 'bar' },
     });
   });
 
   test('call onResponse', async () => {
-    await rpc.test_service.ping();
+    await rpc.tests.ping();
     expect(onResponse).toHaveBeenCalledWith('pong');
   });
 
   test('processes the responce', async () => {
     const kwargs = { some_key: 'foo' };
 
-    const responce = await rpc.test_service.repeat({
+    const responce = await rpc.tests.repeat({
       kwargs,
     });
     expect(processResponse).toHaveBeenCalledWith({ kwargs, args: [] });
