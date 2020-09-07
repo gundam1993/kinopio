@@ -16,5 +16,5 @@
   "modulePaths": [
     "<rootDir>/src/"
   ],
-  "testURL": "http://localhost/"
+  "testURL": "http://localhost:8080/"
 }

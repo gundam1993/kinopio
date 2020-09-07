@@ -1,5 +1,5 @@
 from nameko.rpc import rpc
-from nameko.events import EventDispatcher
+from nameko.events import EventDispatcher, event_handler
 from nameko.extensions import DependencyProvider
 import time
 
@@ -63,7 +63,6 @@ class Service:
     def raise_noraml_exception(self):
         raise Exception('normal exception')
 
-    
     @rpc
     def raise_custom_exception(self):
         raise CustomException('custom exception')
@@ -71,3 +70,8 @@ class Service:
     @rpc
     def return_worker_ctx(self):
         return self.worker_ctx.data
+
+    @event_handler('testGateway', 'hahaha')
+    def handle_hahaha(self, payload):
+        print('payload: ', payload)
+        
