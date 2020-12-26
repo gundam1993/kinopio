@@ -8,3 +8,4 @@ payload.json
 .venv
 .idea/
 coverage
+.history
