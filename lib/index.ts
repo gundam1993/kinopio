@@ -217,6 +217,11 @@ export class Kinopio {
           if (serviceName === 'workerCtx') {
             return target.workerCtx;
           }
+          if (serviceName === 'dispatch') {
+            return (eventType: string, eventData: any) => {
+              this.dispatchEvent(eventType, eventData, workerCtx);
+            };
+          }
           return new Proxy(
             { serviceName },
             {
@@ -384,6 +389,22 @@ export class Kinopio {
       },
       {
         noAck: true,
+      },
+    );
+  };
+
+  protected dispatchEvent = (
+    eventType: string,
+    eventData: any,
+    workerCtx: any = {},
+  ) => {
+    const exchangeName = `${this.serviceName}.events`;
+    this.channel!.publish(
+      exchangeName,
+      eventType,
+      Buffer.from(JSON.stringify(eventData)),
+      {
+        headers: workerCtx,
       },
     );
   };
