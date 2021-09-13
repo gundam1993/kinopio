@@ -489,7 +489,7 @@ export class Kinopio {
 
   private replyHealthCheck= (msg: any) => {
     this.channel?.sendToQueue(
-      `rpc.${this.healthcheckRouteKey}-${this.replyToId}`,
+      `rpc.reply-${this.healthcheckRouteKey}-${this.replyToId}`,
       Buffer.from('ok'),
       {
         correlationId: msg.properties.correlationId,
@@ -554,7 +554,6 @@ export class Kinopio {
    * });
    */
   public healthcheck = (
-    routingKey: string,
     payload: RpcPayload = {},
     workerCtx: object = {}
   ) => {
@@ -569,12 +568,12 @@ export class Kinopio {
       const { args = [], kwargs = {} } = payload;
       const rpcPayload = { args, kwargs };
 
-      this.logger('%s: %s() payload: %o', correlationId, routingKey, rpcPayload);
+      this.logger('%s: %s() payload: %o', correlationId, this.healthcheckRouteKey, rpcPayload);
       this.logger('workerCtx: %o', workerCtx);
 
       this.channel.publish(
         this.serviceName,
-        routingKey,
+        this.healthcheckRouteKey,
         new Buffer(JSON.stringify(rpcPayload)),
         {
           correlationId,
