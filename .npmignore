@@ -13,3 +13,4 @@ jest.config.json
 .env
 .github/
 amqp.ts
+.history/
