@@ -122,6 +122,7 @@ export interface EventHandlerArgs {
 
 export class Kinopio {
   private serviceName: string = 'kinopio';
+  private healthcheckRouteKey: string = 'kinopio-healthcheck';
   private mqOptions: amqp.Options.Connect;
   private connection: amqp.Connection | undefined;
   private channel: amqp.Channel | undefined;
@@ -486,6 +487,108 @@ export class Kinopio {
     }
   };
 
+  private replyHealthCheck= (msg: any) => {
+    this.channel?.sendToQueue(
+      `rpc.${this.healthcheckRouteKey}-${this.replyToId}`,
+      Buffer.from('ok'),
+      {
+        correlationId: msg.properties.correlationId,
+      }
+    );
+  }
+
+  private consumeHealthcheck = (msg: any) => {
+    const correlationId = msg.properties.correlationId;
+
+    if (correlationId in this.rpcResolvers) {
+      // content is 'ok'
+      const content = msg.content.toString();
+      const resolver = this.rpcResolvers[correlationId];
+      delete this.rpcResolvers[correlationId];
+      resolver.resolve(content);
+    }
+  }
+
+  private prepareHealthcheck = async () => {
+    await this.channel?.assertExchange(this.serviceName, 'direct');
+    // healthcheck rpc queue
+    const healthCheckQueueName = `rpc.${this.healthcheckRouteKey}-${this.replyToId}`;
+    const healthCheckQueueInfo = await this.channel?.assertQueue(healthCheckQueueName, {
+      exclusive: true,
+      autoDelete: true,
+      durable: false,
+    });
+
+    await this.channel?.bindQueue(
+      healthCheckQueueInfo?.queue || '',
+      this.serviceName,
+      this.healthcheckRouteKey
+    );
+    await this.channel?.consume(healthCheckQueueInfo?.queue || '', this.replyHealthCheck, {
+      noAck: true,
+    });
+
+    // healthcheck rpc queue reply
+    const healthCheckQueueNameReply = `rpc.reply-${this.healthcheckRouteKey}-${this.replyToId}`;
+    const healthCheckQueueInfoReply = await this.channel?.assertQueue(
+      healthCheckQueueNameReply,
+      {
+        exclusive: true,
+        autoDelete: true,
+        durable: false,
+      }
+    );
+    await this.channel?.consume(healthCheckQueueInfoReply?.queue || '', this.consumeHealthcheck, {
+      noAck: true,
+    });
+  }
+
+
+  /**
+   * kinopio.healthcheck()
+   * .then(response => {
+   *   res.send(response);
+   * })
+   * .catch(error => {
+   *   ...handle error action
+   * });
+   */
+  public healthcheck = (
+    routingKey: string,
+    payload: RpcPayload = {},
+    workerCtx: object = {}
+  ) => {
+    const correlationId = uuid();
+
+    return new Promise((resolve, reject) => {
+      if (!this.channel) {
+        throw new Error('no channel, call rpcSetup() first');
+      }
+
+      this.rpcResolvers[correlationId] = { resolve, reject };
+      const { args = [], kwargs = {} } = payload;
+      const rpcPayload = { args, kwargs };
+
+      this.logger('%s: %s() payload: %o', correlationId, routingKey, rpcPayload);
+      this.logger('workerCtx: %o', workerCtx);
+
+      this.channel.publish(
+        this.serviceName,
+        routingKey,
+        new Buffer(JSON.stringify(rpcPayload)),
+        {
+          correlationId,
+          replyTo: this.replyToId,
+          headers: workerCtx,
+          contentEncoding: 'utf-8',
+          contentType: 'application/xjson',
+          deliveryMode: 2,
+          priority: 0,
+        }
+      );
+    });
+  }
+
   protected connectMq = async (): Promise<void> => {
     this.connection = await amqp.connect(this.mqOptions);
 
@@ -508,6 +611,9 @@ export class Kinopio {
       this.logger('channel error');
       this.reestablishConnection();
     });
+
+    await this.prepareHealthcheck();
+
     this.logger(
       `connected to amqp server: amqp://${this.mqOptions.hostname}:${this.mqOptions.port}/${this.mqOptions.vhost}`,
     );
