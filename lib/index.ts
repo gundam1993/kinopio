@@ -17,6 +17,10 @@ export enum EventHandlerType {
   BROADCAST,
 }
 
+type EventMapping = {
+  [key: string]: string[];
+}
+
 export class RpcError extends Error {
   code: string;
   remoteArgs?: string[];
@@ -296,8 +300,9 @@ export class Kinopio {
    * @param requeueOnError 
    * @returns 
    */
+
   public rpcEventsHandlerMethod = (
-    eventsMapping: any,
+    eventsMapping: EventMapping,
     handlerType: EventHandlerType = EventHandlerType.SERVICE_POOL,
     reliableDelivery: boolean = true,
     requeueOnError: boolean = false,
