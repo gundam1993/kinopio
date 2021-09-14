@@ -274,6 +274,68 @@ export class Kinopio {
     };
   };
 
+  /**
+   * @function
+   *    Generate multiple event handlers by event mapping data.
+   * @param eventsMapping
+   *    i.e.:
+   *      const eventsMapping = {
+   *        locations: [
+   *          "city_updated",
+   *          "city_deleted",
+   *          "city_translation_updated",
+   *          "city_translation_deleted",
+   *        ],
+   *        properties: [
+   *          "property_updated",
+   *          "property_deleted"
+   *        ]
+   *      }
+   * @param handlerType 
+   * @param reliableDelivery 
+   * @param requeueOnError 
+   * @returns 
+   */
+  public rpcEventsHandlerMethod = (
+    eventsMapping: any,
+    handlerType: EventHandlerType = EventHandlerType.SERVICE_POOL,
+    reliableDelivery: boolean = true,
+    requeueOnError: boolean = false,
+  ): MethodDecorator => {
+    return (target, propertyKey: string | symbol, descriptor): void => {
+      const originalFunc = descriptor.value;
+      if (!Reflect.has(target, 'rpcEventHandlerMethods')) {
+        Reflect.set(target, 'rpcEventHandlerMethods', []);
+      }
+      if (!Reflect.has(target, 'createEventHandler')) {
+        Reflect.set(target, 'createEventHandler', this.createEventHandler);
+      }
+      const rpcEventHandlerMethods: RpcEventHandlerMethodInfo[] = Reflect.get(
+        target,
+        'rpcEventHandlerMethods',
+      );
+
+      const sourceServices = Object.keys(eventsMapping)
+      sourceServices.forEach((sourceService: string) => {
+        const eventTypes = eventsMapping[sourceService];
+        eventTypes.forEach((eventType: string) => {
+          rpcEventHandlerMethods.push({
+            sourceService,
+            eventType,
+            handlerType,
+            reliableDelivery,
+            requeueOnError,
+            handlerName: propertyKey.toString(),
+            handlerFunction: originalFunc,
+          });
+        });
+      })
+
+      Reflect.set(target, 'rpcEventHandlerMethods', rpcEventHandlerMethods);
+    };
+  };
+
+
   public eventHandlerClasslogClass<T extends new (...args: any[]) => {}>(
     constructor: T,
   ) {
