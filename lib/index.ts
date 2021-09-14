@@ -17,7 +17,7 @@ export enum EventHandlerType {
   BROADCAST,
 }
 
-type EventMapping = {
+type EventsMapping = {
   [key: string]: string[];
 }
 
@@ -302,7 +302,7 @@ export class Kinopio {
    */
 
   public rpcEventsHandlerMethod = (
-    eventsMapping: EventMapping,
+    eventsMapping: EventsMapping,
     handlerType: EventHandlerType = EventHandlerType.SERVICE_POOL,
     reliableDelivery: boolean = true,
     requeueOnError: boolean = false,
