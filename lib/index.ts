@@ -381,7 +381,6 @@ export class Kinopio {
       handlerName,
       handlerFunction,
       reliableDelivery,
-      requeueOnError,
     } = eventHandlerInfo;
     let exclusive = false;
     const serviceName = this.serviceName;
@@ -405,7 +404,7 @@ export class Kinopio {
      * queues for handlers without reliable delivery should be marked as
      * autoDelete so they're removed when the consumer disconnects
      */
-    const autoDelete = !requeueOnError;
+    const autoDelete = !reliableDelivery;
     exclusive = handlerType === EventHandlerType.BROADCAST;
     if (reliableDelivery) {
       exclusive = false;
