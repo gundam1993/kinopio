@@ -516,7 +516,7 @@ export class Kinopio {
           contentEncoding: 'utf-8',
           contentType: workerCtx.content_type || 'application/xjson',
           deliveryMode: 2,
-          priority: 0,
+          priority: workerCtx.priority || 0,
         },
       );
     });
