@@ -1,26 +1,32 @@
 {
   "name": "kinopio",
-  "version": "1.5.3",
+  "version": "2.0.0",
   "description": "a node client for nameko",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+	"type": "module",
+  "files": [
+		"dist"
+	],
   "scripts": {
     "test": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json",
     "coverage": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json --coverage",
     "build": "tsc --project tsconfig.json --declaration",
+    "clean": "tsc --build --clean",
     "prepare": "yarn build"
   },
   "author": "gundam1993 <gundam1993@gmail.com>",
   "keywords": [
     "nameko",
-    "rpc"
+    "rpc",
+    "microservice"
   ],
   "license": "MIT",
   "devDependencies": {
-    "@types/amqplib": "^0.5.13",
+    "@types/amqplib": "0.10.4",
     "@types/humps": "^1.1.2",
     "@types/jest": "^24.0.18",
-    "@types/uuid": "^3.4.5",
+    "@types/uuid": "9.0.8",
     "dotenv": "^8.1.0",
     "humps": "^2.0.1",
     "jest": "^24.9.0",
@@ -30,10 +36,10 @@
     "tslint": "^5.19.0",
     "tslint-config-airbnb": "^5.11.1",
     "tslint-config-prettier": "^1.18.0",
-    "typescript": "^3.8.3"
+    "typescript": "5.3.3"
   },
   "dependencies": {
-    "amqplib": "^0.5.5",
-    "uuid": "^3.3.3"
+    "amqplib": "0.10.3",
+    "uuid": "9.0.1"
   }
 }
