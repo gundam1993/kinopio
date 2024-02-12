@@ -61,18 +61,6 @@ export interface RpcEventHandlerMethodInfo {
   handlerFunction: any;
 }
 
-function parseXJson(_: any, value: any) {
-  if (typeof value === 'string') {
-    const stringableMatches = value.match(/^\!\!(datetime|date|decimal) (.*)/);
-    let parsedValue = value;
-    if (stringableMatches && stringableMatches.length === 3) {
-      parsedValue = stringableMatches[2];
-    }
-    return parsedValue;
-  }
-  return value;
-}
-
 export interface RpcPayload {
   args?: any[];
   kwargs?: object;
@@ -716,7 +704,7 @@ export class Kinopio {
 
   protected parseMessage(message: any) {
     const rawMessageContent = message.content.toString();
-    const messageContent = JSON.parse(rawMessageContent, parseXJson);
+    const messageContent = JSON.parse(rawMessageContent);
     return messageContent;
   }
 
