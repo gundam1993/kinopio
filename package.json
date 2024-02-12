@@ -1,13 +1,18 @@
 {
   "name": "kinopio",
-  "version": "1.5.3",
+  "version": "2.0.0",
   "description": "a node client for nameko",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+	"type": "module",
+  "files": [
+		"dist"
+	],
   "scripts": {
     "test": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json",
     "coverage": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json --coverage",
     "build": "tsc --project tsconfig.json --declaration",
+    "clean": "tsc --build --clean",
     "prepare": "yarn build"
   },
   "author": "gundam1993 <gundam1993@gmail.com>",
