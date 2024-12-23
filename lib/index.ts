@@ -1,5 +1,11 @@
 import * as uuid from 'uuid/v4';
 import * as amqp from 'amqplib';
+import { context, propagation } from '@opentelemetry/api';
+
+interface Carrier {
+  traceparent?: string;
+  tracestate?: string;
+}
 
 interface EntrypointsHooks {
   processResponse?: (response: any) => any;
@@ -214,7 +220,7 @@ export class Kinopio {
     this.logger('amqp server disconnected');
   }
 
-  public buildRpcProxy = (workerCtx = {}): RpcContext => {
+  public buildRpcProxy = (workerCtx: any = {}): RpcContext => {
     return new Proxy(
       { workerCtx },
       {
@@ -232,12 +238,27 @@ export class Kinopio {
             {
               get: (serviceTarget, functionName) => {
                 return (payload: any) =>
-                  this.callRpc(
+                {
+                  if (process.env.OPENTELEMETRY_INSTRUMENT === 'true') {
+                    const output: Carrier = {};
+                    propagation.inject(context.active(), output);
+                    const { traceparent, tracestate } = output;
+                    if (traceparent) {
+                      target.workerCtx['nameko.traceparent'] = traceparent;
+                    }
+                    if (tracestate) {
+                      target.workerCtx['nameko.tracestate'] = tracestate;
+                    }
+                    this.logger("propagate context", traceparent, tracestate);
+                  }
+
+                  return this.callRpc(
                     serviceTarget.serviceName.toString(),
                     functionName.toString(),
                     payload,
                     target.workerCtx,
                   );
+                }
               },
             },
           );
@@ -357,7 +378,7 @@ export class Kinopio {
         const rpcEventHandlerMethods: RpcEventHandlerMethodInfo[] = Reflect.get(
           this,
           'rpcEventHandlerMethods',
-        );
+        ) as RpcEventHandlerMethodInfo[];
         const createEventHandler: any = Reflect.get(
           this,
           'createEventHandler',

@@ -1,6 +1,23 @@
 import { ServiceBase, RpcMethod, RpcContext, RpcError, Kinopio } from '..';
 import { camelizeKeys } from 'humps';
 
+import { Resource } from '@opentelemetry/resources';
+// import { SimpleSpanProcessor, ConsoleSpanExporter } from '@opentelemetry/sdk-trace-node';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
+
+const provider = new NodeTracerProvider({
+  resource: new Resource({
+    [ATTR_SERVICE_NAME]: 'kinopio-test',
+  }),
+});
+// uncomment below to see the trace in the console
+// provider.addSpanProcessor(new SimpleSpanProcessor(new ConsoleSpanExporter()));
+provider.register();
+
+import { trace, context } from '@opentelemetry/api'
+const tracer = trace.getTracerProvider().getTracer('test-service')
+
 interface TestService extends ServiceBase {
   ping: RpcMethod;
   repeat: RpcMethod;
@@ -41,9 +58,11 @@ describe('rpc', () => {
   let rpc: RpcContext<TestContext>;
   beforeAll(async () => {
     await kinopio.connect();
-    rpc = await kinopio.buildRpcProxy(namekoWorkerCtx);
   });
   afterAll(() => kinopio.close());
+  beforeEach(async () => {
+    rpc = await kinopio.buildRpcProxy(Object.assign({}, namekoWorkerCtx));
+  });
 
   test('can make a basic rpc call', async () => {
     await expect(rpc.test_service.ping()).resolves.toBe('pong');
@@ -122,6 +141,34 @@ describe('rpc', () => {
       expect(rpc.workerCtx['nameko.authorization']).toEqual('testAuthorization');
       expect(rpc.workerCtx['nameko.language']).toEqual('en-us');
       expect(rpc.workerCtx['nameko.locale']).toEqual('en-us');
+    });
+
+    test('opentelemetry context not propogates when opentelemetry is disabled', async () => {
+      const span = tracer.startSpan('otel-context-propogates');
+      const ctx = trace.setSpan(context.active(), span);
+      context.with(ctx, async () => {
+        process.env.OPENTELEMETRY_INSTRUMENT = 'false';
+        const res = await rpc.test_service.return_worker_ctx();
+        expect(res.traceparent).toBeUndefined();
+      });
+      span.end();
+    });
+
+    test('opentelemetry context propogates correctly', async () => {
+      const span = tracer.startSpan('otel-context-propogates');
+      const ctx = trace.setSpan(context.active(), span);
+      context.with(ctx, async () => {
+        process.env.OPENTELEMETRY_INSTRUMENT = 'true'
+        const res = await rpc.test_service.return_worker_ctx();
+        expect(res.traceparent).not.toBeUndefined();
+      });
+      span.end();
+    });
+
+    test('opentelemetry no active context propogates', async () => {
+      process.env.OPENTELEMETRY_INSTRUMENT = 'true'
+      const res = await rpc.test_service.return_worker_ctx();
+      expect(res.traceparent).toBeUndefined();
     });
   });
 

@@ -11,4 +11,4 @@ ACCEPT:
   - json
   - xjson
 
-AMQP_URI: amqp://guest:guest@localhost:5672/
+AMQP_URI: amqp://${RABBIT_USER:guest}:${RABBIT_PASS:guest}@${RABBIT_SERVER:localhost}:${RABBIT_PORT:5672}/${RABBIT_VHOST:}
