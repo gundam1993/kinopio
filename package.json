@@ -1,6 +1,6 @@
 {
   "name": "kinopio",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "a node client for nameko",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
-    "amqplib": "^0.5.5",
+    "amqplib": "^0.10.9",
     "uuid": "^3.3.3"
   }
 }
