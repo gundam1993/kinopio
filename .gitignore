@@ -9,3 +9,5 @@ payload.json
 .idea/
 coverage
 .history
+
+.DS_Store

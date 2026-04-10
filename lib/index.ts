@@ -1,4 +1,4 @@
-import * as uuid from 'uuid/v4';
+import { v4 as uuid } from 'uuid';
 import * as amqp from 'amqplib';
 import { context, propagation } from '@opentelemetry/api';
 
@@ -25,7 +25,7 @@ export enum EventHandlerType {
 
 type EventsMapping = {
   [key: string]: string[];
-}
+};
 
 export class RpcError extends Error {
   code: string;
@@ -134,7 +134,7 @@ export class Kinopio {
   private serviceName: string = 'kinopio';
   private healthcheckRouteKey: string = 'kinopio-healthcheck';
   private mqOptions: amqp.Options.Connect;
-  private connection: amqp.Connection | undefined;
+  private connection: amqp.ChannelModel | undefined;
   private channel: amqp.Channel | undefined;
   private eventChannels: amqp.Channel[];
   private entrypointHooks: EntrypointsHooks;
@@ -159,7 +159,7 @@ export class Kinopio {
   private reconnectInterval: number;
   private reconnectMaxAttemptes: number;
   private numAttempts: number = 0;
-  private eventChannelsArgs: EventHandlerArgs[];
+  private eventChannelsArgs: { [key: string]: EventHandlerArgs } = {};
 
   constructor(serviceName: string = 'kinopio', config: KinopioConfig) {
     if (!config) throw new Error('Kinopio requires options.');
@@ -197,17 +197,16 @@ export class Kinopio {
     this.reconnectInterval = reconnectInterval || 2000;
     this.reconnectMaxAttemptes = reconnectMaxAttemptes || 10;
     this.eventChannels = [];
-    this.eventChannelsArgs = [];
+    this.eventChannelsArgs = {};
   }
 
   public async connect(): Promise<RpcContext> {
     await this.connectMq();
-    if (this.eventChannelsArgs.length) {
-      this.eventChannelsArgs.forEach((element) => {
+    if (Object.keys(this.eventChannelsArgs).length) {
+      Object.values(this.eventChannelsArgs).forEach((element) => {
         element.handlerFunction = element.handlerFunction.bind(element.target);
         this.createEventHandler(element);
       });
-      this.eventChannelsArgs = [];
     }
   }
 
@@ -237,8 +236,7 @@ export class Kinopio {
             { serviceName },
             {
               get: (serviceTarget, functionName) => {
-                return (payload: any) =>
-                {
+                return (payload: any) => {
                   if (process.env.OPENTELEMETRY_INSTRUMENT === 'true') {
                     const output: Carrier = {};
                     propagation.inject(context.active(), output);
@@ -249,7 +247,7 @@ export class Kinopio {
                     if (tracestate) {
                       target.workerCtx['nameko.tracestate'] = tracestate;
                     }
-                    this.logger("propagate context", traceparent, tracestate);
+                    this.logger('propagate context', traceparent, tracestate);
                   }
 
                   return this.callRpc(
@@ -258,7 +256,7 @@ export class Kinopio {
                     payload,
                     target.workerCtx,
                   );
-                }
+                };
               },
             },
           );
@@ -316,10 +314,10 @@ export class Kinopio {
    *          "property_deleted"
    *        ]
    *      }
-   * @param handlerType 
-   * @param reliableDelivery 
-   * @param requeueOnError 
-   * @returns 
+   * @param handlerType
+   * @param reliableDelivery
+   * @param requeueOnError
+   * @returns
    */
 
   public rpcEventsHandlerMethod = (
@@ -341,11 +339,11 @@ export class Kinopio {
         'rpcEventHandlerMethods',
       );
 
-      const sourceServices = Object.keys(eventsMapping)
+      const sourceServices = Object.keys(eventsMapping);
       sourceServices.forEach((sourceService: string) => {
         const eventTypes = eventsMapping[sourceService];
         eventTypes.forEach((eventType: string) => {
-          const args = { sourceService, eventType }
+          const args = { sourceService, eventType };
           rpcEventHandlerMethods.push({
             sourceService,
             eventType,
@@ -357,12 +355,11 @@ export class Kinopio {
             handlerFunction: originalFunc(args),
           });
         });
-      })
+      });
 
       Reflect.set(target, 'rpcEventHandlerMethods', rpcEventHandlerMethods);
     };
   };
-
 
   public eventHandlerClasslogClass<T extends new (...args: any[]) => {}>(
     constructor: T,
@@ -372,17 +369,17 @@ export class Kinopio {
     return class extends constructor {
       constructor(...args: any[]) {
         super(...args);
-        if (!Reflect.has(this, 'rpcEventHandlerMethods') || !Reflect.has(this, 'createEventHandler')) {
+        if (
+          !Reflect.has(this, 'rpcEventHandlerMethods') ||
+          !Reflect.has(this, 'createEventHandler')
+        ) {
           return;
         }
         const rpcEventHandlerMethods: RpcEventHandlerMethodInfo[] = Reflect.get(
           this,
           'rpcEventHandlerMethods',
         ) as RpcEventHandlerMethodInfo[];
-        const createEventHandler: any = Reflect.get(
-          this,
-          'createEventHandler',
-        );
+        const createEventHandler: any = Reflect.get(this, 'createEventHandler');
         rpcEventHandlerMethods.forEach((methods: RpcEventHandlerMethodInfo) => {
           createEventHandler({
             target: this,
@@ -408,9 +405,9 @@ export class Kinopio {
     let queueName: string;
     const handlerNameString = handlerName.toString();
     if (handlerType === EventHandlerType.SERVICE_POOL) {
-      queueName = `evt-${ sourceService }-${ eventType }--${ serviceName }.${ handlerNameString }`;
+      queueName = `evt-${sourceService}-${eventType}--${serviceName}.${handlerNameString}`;
     } else if (handlerType === EventHandlerType.SINGLETON) {
-      queueName = `evt-${ sourceService }-${ eventType }`;
+      queueName = `evt-${sourceService}-${eventType}`;
     } else {
       if (reliableDelivery) {
         throw new EventHandlerConfigurationError(
@@ -418,9 +415,9 @@ export class Kinopio {
           which is not compatible with reliable delivery.`,
         );
       }
-      queueName = `evt-${ sourceService }-${ eventType }--${ serviceName }.${ handlerNameString }-${ uuid() }`;
+      queueName = `evt-${sourceService}-${eventType}--${serviceName}.${handlerNameString}-${uuid()}`;
     }
-    const exchangeName = `${ sourceService }.events`;
+    const exchangeName = `${sourceService}.events`;
     /**
      * queues for handlers without reliable delivery should be marked as
      * autoDelete so they're removed when the consumer disconnects
@@ -430,17 +427,17 @@ export class Kinopio {
     if (reliableDelivery) {
       exclusive = false;
     }
+    this.eventChannelsArgs[queueName] = eventHandlerInfo;
     if (!this.connection) {
-      this.eventChannelsArgs.push(eventHandlerInfo);
       return;
     }
     const eventChannel = await this.connection.createChannel();
     eventChannel.on('close', () => {
-      this.logger(`event channel ${ queueName } close`);
+      this.logger(`event channel ${queueName} close`);
       this.reestablishConnection();
     });
     eventChannel.on('error', () => {
-      this.logger(`event channel ${ queueName } error`);
+      this.logger(`event channel ${queueName} error`);
       this.reestablishConnection();
     });
     this.eventChannels.push(eventChannel);
@@ -475,7 +472,10 @@ export class Kinopio {
           sourceService,
           messageContent,
         );
-        handlerFunction.apply(target, [messageContent, message?.properties.headers]);
+        handlerFunction.apply(target, [
+          messageContent,
+          message?.properties.headers,
+        ]);
       },
       {
         noAck: true,
@@ -488,7 +488,7 @@ export class Kinopio {
     eventData: any,
     workerCtx: any = {},
   ) => {
-    const exchangeName = `${ this.serviceName }.events`;
+    const exchangeName = `${this.serviceName}.events`;
     this.channel!.publish(
       exchangeName,
       eventType,
@@ -505,7 +505,7 @@ export class Kinopio {
     payload: RpcPayload = {},
     workerCtx: any = {},
   ) => {
-    const routingKey = `${ serviceName }.${ functionName }`;
+    const routingKey = `${serviceName}.${functionName}`;
     const correlationId = uuid();
     return new Promise((resolve, reject) => {
       if (!this.channel) {
@@ -578,13 +578,13 @@ export class Kinopio {
 
   private replyHealthCheck = (msg: any) => {
     this.channel?.sendToQueue(
-      `rpc.reply-${ this.healthcheckRouteKey }-${ this.replyToId }`,
+      `rpc.reply-${this.healthcheckRouteKey}-${this.replyToId}`,
       Buffer.from('ok'),
       {
         correlationId: msg.properties.correlationId,
-      }
+      },
     );
-  }
+  };
 
   private consumeHealthcheck = (msg: any) => {
     const correlationId = msg.properties.correlationId;
@@ -596,42 +596,52 @@ export class Kinopio {
       delete this.rpcResolvers[correlationId];
       resolver.resolve(content);
     }
-  }
+  };
 
   private prepareHealthcheck = async () => {
     await this.channel?.assertExchange(this.serviceName, 'direct');
     // healthcheck rpc queue
-    const healthCheckQueueName = `rpc.${ this.healthcheckRouteKey }-${ this.replyToId }`;
-    const healthCheckQueueInfo = await this.channel?.assertQueue(healthCheckQueueName, {
-      exclusive: true,
-      autoDelete: true,
-      durable: false,
-    });
+    const healthCheckQueueName = `rpc.${this.healthcheckRouteKey}-${this.replyToId}`;
+    const healthCheckQueueInfo = await this.channel?.assertQueue(
+      healthCheckQueueName,
+      {
+        exclusive: true,
+        autoDelete: true,
+        durable: false,
+      },
+    );
 
     await this.channel?.bindQueue(
       healthCheckQueueInfo?.queue || '',
       this.serviceName,
-      this.healthcheckRouteKey
+      this.healthcheckRouteKey,
     );
-    await this.channel?.consume(healthCheckQueueInfo?.queue || '', this.replyHealthCheck, {
-      noAck: true,
-    });
+    await this.channel?.consume(
+      healthCheckQueueInfo?.queue || '',
+      this.replyHealthCheck,
+      {
+        noAck: true,
+      },
+    );
 
     // healthcheck rpc queue reply
-    const healthCheckQueueNameReply = `rpc.reply-${ this.healthcheckRouteKey }-${ this.replyToId }`;
+    const healthCheckQueueNameReply = `rpc.reply-${this.healthcheckRouteKey}-${this.replyToId}`;
     const healthCheckQueueInfoReply = await this.channel?.assertQueue(
       healthCheckQueueNameReply,
       {
         exclusive: true,
         autoDelete: true,
         durable: false,
-      }
+      },
     );
-    await this.channel?.consume(healthCheckQueueInfoReply?.queue || '', this.consumeHealthcheck, {
-      noAck: true,
-    });
-  }
-
+    await this.channel?.consume(
+      healthCheckQueueInfoReply?.queue || '',
+      this.consumeHealthcheck,
+      {
+        noAck: true,
+      },
+    );
+  };
 
   /**
    * kinopio.healthcheck()
@@ -642,10 +652,7 @@ export class Kinopio {
    *   ...handle error action
    * });
    */
-  public healthcheck = (
-    payload: RpcPayload = {},
-    workerCtx: object = {}
-  ) => {
+  public healthcheck = (payload: RpcPayload = {}, workerCtx: object = {}) => {
     const correlationId = uuid();
 
     return new Promise((resolve, reject) => {
@@ -657,7 +664,12 @@ export class Kinopio {
       const { args = [], kwargs = {} } = payload;
       const rpcPayload = { args, kwargs };
 
-      this.logger('%s: %s() payload: %o', correlationId, this.healthcheckRouteKey, rpcPayload);
+      this.logger(
+        '%s: %s() payload: %o',
+        correlationId,
+        this.healthcheckRouteKey,
+        rpcPayload,
+      );
       this.logger('workerCtx: %o', workerCtx);
 
       this.channel.publish(
@@ -672,10 +684,10 @@ export class Kinopio {
           contentType: 'application/xjson',
           deliveryMode: 2,
           priority: 0,
-        }
+        },
       );
     });
-  }
+  };
 
   protected connectMq = async (): Promise<void> => {
     this.connection = await amqp.connect(this.mqOptions);
@@ -703,10 +715,10 @@ export class Kinopio {
     await this.prepareHealthcheck();
 
     this.logger(
-      `connected to amqp server: amqp://${ this.mqOptions.hostname }:${ this.mqOptions.port }/${ this.mqOptions.vhost }`,
+      `connected to amqp server: amqp://${this.mqOptions.hostname}:${this.mqOptions.port}/${this.mqOptions.vhost}`,
     );
 
-    const queueName = `${ this.queuePrefix }-${ this.replyToId }`;
+    const queueName = `${this.queuePrefix}-${this.replyToId}`;
     const queueInfo = await this.channel.assertQueue(queueName, {
       exclusive: true,
       autoDelete: true,
@@ -733,7 +745,8 @@ export class Kinopio {
     }
     this.reconnectLock = true;
     this.logger(
-      `connection closed, try to connect in ${ this.reconnectInterval / 1000
+      `connection closed, try to connect in ${
+        this.reconnectInterval / 1000
       } seconds`,
     );
     setTimeout(this.reconnect, this.reconnectInterval);
@@ -741,25 +754,25 @@ export class Kinopio {
 
   protected reconnect = async () => {
     this.logger(
-      `trying to reconnect to amqp://${ this.mqOptions.hostname }:${ this.mqOptions.port }/${ this.mqOptions.vhost }`,
+      `trying to reconnect to amqp://${this.mqOptions.hostname}:${this.mqOptions.port}/${this.mqOptions.vhost}`,
     );
     this.numAttempts += 1;
     const timeout =
       this.reconnectInterval + this.numAttempts * this.reconnectInterval;
     try {
-      await this.connectMq();
+      await this.connect();
       this.reconnectLock = false;
     } catch (error) {
       if (this.numAttempts === this.reconnectMaxAttemptes) {
         this.logger(
-          `failed to reconnect after ${ this.reconnectMaxAttemptes } tries`,
+          `failed to reconnect after ${this.reconnectMaxAttemptes} tries`,
         );
         throw new Error(
-          `AMQP disconnected after ${ this.reconnectMaxAttemptes } attempts`,
+          `AMQP disconnected after ${this.reconnectMaxAttemptes} attempts`,
         );
       }
       this.logger(
-        `could not connect, trying again in ${ timeout / 1000 } seconds`,
+        `could not connect, trying again in ${timeout / 1000} seconds`,
       );
       setTimeout(this.reconnect, this.reconnectInterval);
     }
