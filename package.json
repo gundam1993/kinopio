@@ -1,6 +1,6 @@
 {
   "name": "kinopio",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "description": "a node client for nameko",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -8,7 +8,7 @@
     "test": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json",
     "coverage": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json --coverage",
     "build": "tsc --project tsconfig.json --declaration",
-    "prepare": "yarn build"
+    "prepare": "pnpm build"
   },
   "author": "gundam1993 <gundam1993@gmail.com>",
   "keywords": [
@@ -17,10 +17,9 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@types/amqplib": "^0.5.13",
+    "@types/amqplib": "^0.10.8",
     "@types/humps": "^1.1.2",
     "@types/jest": "^24.0.18",
-    "@types/uuid": "^3.4.5",
     "dotenv": "^8.1.0",
     "humps": "^2.0.1",
     "jest": "^24.9.0",
@@ -36,6 +35,6 @@
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
     "amqplib": "^0.10.9",
-    "uuid": "^3.3.3"
+    "uuid": "^13.0.0"
   }
 }
