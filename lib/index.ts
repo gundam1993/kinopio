@@ -159,7 +159,7 @@ export class Kinopio {
   private reconnectInterval: number;
   private reconnectMaxAttemptes: number;
   private numAttempts: number = 0;
-  private eventChannelsArgs: EventHandlerArgs[];
+  private eventChannelsArgs: { [key: string]: EventHandlerArgs } = {};
 
   constructor(serviceName: string = 'kinopio', config: KinopioConfig) {
     if (!config) throw new Error('Kinopio requires options.');
@@ -197,13 +197,13 @@ export class Kinopio {
     this.reconnectInterval = reconnectInterval || 2000;
     this.reconnectMaxAttemptes = reconnectMaxAttemptes || 10;
     this.eventChannels = [];
-    this.eventChannelsArgs = [];
+    this.eventChannelsArgs = {};
   }
 
   public async connect(): Promise<RpcContext> {
     await this.connectMq();
-    if (this.eventChannelsArgs.length) {
-      this.eventChannelsArgs.forEach((element) => {
+    if (Object.keys(this.eventChannelsArgs).length) {
+      Object.values(this.eventChannelsArgs).forEach((element) => {
         element.handlerFunction = element.handlerFunction.bind(element.target);
         this.createEventHandler(element);
       });
@@ -427,8 +427,8 @@ export class Kinopio {
     if (reliableDelivery) {
       exclusive = false;
     }
+    this.eventChannelsArgs[queueName] = eventHandlerInfo;
     if (!this.connection) {
-      this.eventChannelsArgs.push(eventHandlerInfo);
       return;
     }
     const eventChannel = await this.connection.createChannel();
