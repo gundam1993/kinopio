@@ -2,3 +2,4 @@ nameko==3.0.0rc11
 udatetime==0.0.17
 python-dateutil==2.8.2
 kombu==5.3.7
+orjson==3.12.0

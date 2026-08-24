@@ -1,6 +1,8 @@
 from nameko.rpc import rpc
 from nameko.events import EventDispatcher
 from nameko.extensions import DependencyProvider
+from datetime import date, datetime, timezone
+from decimal import Decimal
 import time
 
 
@@ -57,6 +59,16 @@ class Service:
             'boolean': True,
             'array': [1, 2, 3],
             'object': {'key': 'value'}
+        }
+
+    @rpc
+    def get_some_json_data(self):
+        return {
+            'datetime': datetime(
+                2026, 8, 23, 12, 45, 30, 123456, tzinfo=timezone.utc
+            ),
+            'date': date(2026, 8, 23),
+            'decimal': Decimal('12345678901234567890.1200'),
         }
 
     @rpc

@@ -14,9 +14,6 @@ importers:
       amqplib:
         specifier: ^0.10.9
         version: 0.10.9
-      uuid:
-        specifier: ^13.0.0
-        version: 13.0.0
     devDependencies:
       '@opentelemetry/sdk-node':
         specifier: ^0.56.0
@@ -2386,10 +2383,6 @@ packages:
   util.promisify@1.1.3:
     resolution: {integrity: sha512-GIEaZ6o86fj09Wtf0VfZ5XP7tmd4t3jM5aZCgmBi231D0DB1AEBa3Aa6MP48DMsAIi96WkpWLimIWVwOjbDMOw==}
     engines: {node: '>= 0.8'}
-
-  uuid@13.0.0:
-    resolution: {integrity: sha512-XQegIaBTVUjSHliKqcnFqYypAd4S+WCYt5NIeRs6w/UAry7z8Y9j5ZwRRL4kzq9U3sD6v+85er9FvkEaBpji2w==}
-    hasBin: true
 
   uuid@3.4.0:
     resolution: {integrity: sha512-HjSDRw6gZE5JMggctHBcjVak08+KEVhSIiDzFnT9S9aegmp85S/bReBVTb4QTFaRNptJ9kuYaNhnbNEOkbKb/A==}
@@ -5471,8 +5464,6 @@ snapshots:
       has-symbols: 1.1.0
       object.getownpropertydescriptors: 2.1.9
       safe-array-concat: 1.1.3
-
-  uuid@13.0.0: {}
 
   uuid@3.4.0: {}
 
