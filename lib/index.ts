@@ -1,4 +1,4 @@
-import { v4 as uuid } from 'uuid';
+import { randomUUID as uuid } from 'crypto';
 import * as amqp from 'amqplib';
 import { context, propagation } from '@opentelemetry/api';
 
@@ -23,12 +23,13 @@ export enum EventHandlerType {
   BROADCAST,
 }
 
-type EventsMapping = {
+interface EventsMapping {
   [key: string]: string[];
-};
+}
 
 export class RpcError extends Error {
   code: string;
+  deliveryState: DeliveryState = 'confirmed';
   remoteArgs?: string[];
   remoteName?: string;
   remoteFullName?: string;
@@ -49,6 +50,177 @@ export class RpcError extends Error {
     // Set the prototype explicitly.
     Object.setPrototypeOf(this, RpcError.prototype);
   }
+}
+
+export type RpcContentType = 'application/xjson' | 'application/json';
+export type DeliveryState = 'not_sent' | 'confirmed' | 'unknown';
+export type ConnectionState =
+  | 'disconnected'
+  | 'connecting'
+  | 'ready'
+  | 'reconnecting'
+  | 'closing'
+  | 'closed';
+
+export type RpcOutcome =
+  | 'success'
+  | 'remote_error'
+  | 'timeout'
+  | 'cancelled'
+  | 'not_ready'
+  | 'overloaded'
+  | 'publish_error'
+  | 'connection_lost'
+  | 'closed'
+  | 'serialization_error'
+  | 'response_processing_error';
+
+export class KinopioError extends Error {
+  constructor(
+    message: string,
+    public code: string,
+    public deliveryState: DeliveryState,
+  ) {
+    super(message);
+    this.name = this.constructor.name;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class RpcTimeoutError extends KinopioError {
+  constructor(service: string, method: string, timeoutMs: number) {
+    super(
+      `RPC ${service}.${method} timed out after ${timeoutMs}ms`,
+      'RPC_TIMEOUT',
+      'unknown',
+    );
+  }
+}
+
+export class RpcConnectionLostError extends KinopioError {
+  constructor(message: string = 'AMQP connection lost while RPC was pending') {
+    super(message, 'RPC_CONNECTION_LOST', 'unknown');
+  }
+}
+
+export class RpcNotReadyError extends KinopioError {
+  constructor() {
+    super('AMQP channel is not ready', 'RPC_NOT_READY', 'not_sent');
+  }
+}
+
+export class RpcOverloadedError extends KinopioError {
+  constructor(maxInflight: number) {
+    super(
+      `RPC in-flight limit of ${maxInflight} has been reached`,
+      'RPC_OVERLOADED',
+      'not_sent',
+    );
+  }
+}
+
+export class RpcPublishError extends KinopioError {
+  public cause?: unknown;
+
+  constructor(cause: unknown) {
+    super('Failed to publish RPC request', 'RPC_PUBLISH_ERROR', 'not_sent');
+    this.cause = cause;
+  }
+}
+
+export class RpcSerializationError extends KinopioError {
+  public cause?: unknown;
+  public contentType?: string;
+
+  constructor(message: string, contentType?: string, cause?: unknown) {
+    super(message, 'RPC_SERIALIZATION_ERROR', 'not_sent');
+    this.contentType = contentType;
+    this.cause = cause;
+  }
+}
+
+export class RpcContentTypeMismatchError extends RpcSerializationError {
+  constructor(expected: RpcContentType, actual: string) {
+    super(
+      `RPC response content type mismatch: expected ${expected}, received ${actual}`,
+      actual,
+    );
+    this.code = 'RPC_CONTENT_TYPE_MISMATCH';
+  }
+}
+
+export class RpcCancelledError extends KinopioError {
+  constructor(deliveryState: DeliveryState) {
+    super('RPC call was cancelled', 'RPC_CANCELLED', deliveryState);
+  }
+}
+
+export class RpcClosedError extends KinopioError {
+  constructor(deliveryState: DeliveryState = 'unknown') {
+    super('Kinopio client is closing', 'RPC_CLOSED', deliveryState);
+  }
+}
+
+export interface RpcCallOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  contentType?: RpcContentType;
+}
+
+export interface RpcStartEvent {
+  clientService: string;
+  service: string;
+  method: string;
+  contentType: RpcContentType;
+  requestBytes: number;
+  inflight: number;
+}
+
+export interface RpcFinishEvent extends RpcStartEvent {
+  outcome: RpcOutcome;
+  durationMs: number;
+  deliveryState: DeliveryState;
+  inflight: number;
+  responseContentType?: string;
+  responseContentTypeStatus?: ResponseContentTypeStatus;
+  responseBytes?: number;
+  decodeDurationMs?: number;
+  legacyTags?: Array<'datetime' | 'date' | 'decimal'>;
+}
+
+export type ResponseContentTypeStatus =
+  | 'matched'
+  | 'missing'
+  | 'mismatch'
+  | 'unknown';
+
+export interface ConnectionStateEvent {
+  previous: ConnectionState;
+  current: ConnectionState;
+}
+
+export interface LateReplyEvent {
+  contentType?: string;
+}
+
+export interface KinopioObserver {
+  onConnectionStateChange?: (event: ConnectionStateEvent) => void;
+  onRpcStart?: (event: RpcStartEvent) => void;
+  onRpcFinish?: (event: RpcFinishEvent) => void;
+  onLateReply?: (event: LateReplyEvent) => void;
+}
+
+export interface KinopioSnapshot {
+  state: ConnectionState;
+  pendingRpc: number;
+  replyConsumerReady: boolean;
+  readyEventConsumers: number;
+  expectedEventConsumers: number;
+  reconnectAttempts: number;
+  lateReplies: number;
+  observerErrors: number;
+  lastConnectedAt?: number;
+  lastDisconnectedAt?: number;
 }
 
 class EventHandlerConfigurationError extends Error {
@@ -79,12 +251,31 @@ function parseXJson(_: any, value: any) {
   return value;
 }
 
+function containsKombuTypeEnvelope(value: any): boolean {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  if (
+    !Array.isArray(value) &&
+    Object.prototype.hasOwnProperty.call(value, '__type__') &&
+    Object.prototype.hasOwnProperty.call(value, '__value__')
+  ) {
+    return true;
+  }
+  return Object.keys(value).some((key) =>
+    containsKombuTypeEnvelope(value[key]),
+  );
+}
+
 export interface RpcPayload {
   args?: any[];
   kwargs?: object;
 }
 
-export type RpcMethod<T = any> = (payload?: RpcPayload) => Promise<T>;
+export type RpcMethod<T = any> = (
+  payload?: RpcPayload,
+  options?: RpcCallOptions,
+) => Promise<T>;
 
 export interface ServiceBase {
   [key: string]: RpcMethod | any;
@@ -117,6 +308,43 @@ export interface KinopioConfig {
   onConnect?: (connection: amqp.Connection, channel: amqp.Channel) => any;
   reconnectInterval?: number;
   reconnectMaxAttemptes?: number;
+  rpc?: {
+    defaultTimeoutMs?: number;
+    maxInflight?: number;
+  };
+  serialization?: {
+    defaultContentType?: RpcContentType;
+    contentTypeByTarget?: Record<string, RpcContentType>;
+  };
+  observer?: KinopioObserver;
+}
+
+interface PendingCall {
+  resolve: (value: any) => void;
+  reject: (reason?: any) => void;
+  service: string;
+  method: string;
+  contentType: RpcContentType;
+  requestBytes: number;
+  startedAt: [number, number];
+  deliveryState: DeliveryState;
+  timeout?: ReturnType<typeof setTimeout>;
+  signal?: AbortSignal;
+  abortHandler?: () => void;
+}
+
+interface ResponseMetadata {
+  contentType: string;
+  contentTypeStatus: ResponseContentTypeStatus;
+  payloadBytes: number;
+  decodeDurationMs: number;
+  legacyTags: Array<'datetime' | 'date' | 'decimal'>;
+}
+
+interface ParsedMessage extends ResponseMetadata {
+  content: any;
+  contentType: RpcContentType;
+  contentTypeStatus: 'matched' | 'missing';
 }
 
 export interface EventHandlerArgs {
@@ -139,7 +367,7 @@ export class Kinopio {
   private eventChannels: amqp.Channel[];
   private entrypointHooks: EntrypointsHooks;
   private queuePrefix: string;
-  private rpcResolvers: any = {};
+  private rpcResolvers: Map<string, PendingCall> = new Map();
   private replyToId: string;
   private logger: (message?: any, ...optionalParams: any[]) => any;
   private requestLogger: (
@@ -160,6 +388,20 @@ export class Kinopio {
   private reconnectMaxAttemptes: number;
   private numAttempts: number = 0;
   private eventChannelsArgs: { [key: string]: EventHandlerArgs } = {};
+  private defaultTimeoutMs?: number;
+  private maxInflight?: number;
+  private defaultContentType: RpcContentType;
+  private contentTypeByTarget: Record<string, RpcContentType>;
+  private observer?: KinopioObserver;
+  private connectionState: ConnectionState = 'disconnected';
+  private replyConsumerReady: boolean = false;
+  private readyEventConsumers: number = 0;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private closing: boolean = false;
+  private lateReplies: number = 0;
+  private observerErrors: number = 0;
+  private lastConnectedAt?: number;
+  private lastDisconnectedAt?: number;
 
   constructor(serviceName: string = 'kinopio', config: KinopioConfig) {
     if (!config) throw new Error('Kinopio requires options.');
@@ -180,6 +422,9 @@ export class Kinopio {
       onConnect,
       reconnectInterval,
       reconnectMaxAttemptes,
+      rpc,
+      serialization,
+      observer,
     } = config;
 
     this.mqOptions = { hostname, port, vhost, username, password };
@@ -196,27 +441,124 @@ export class Kinopio {
       });
     this.reconnectInterval = reconnectInterval || 2000;
     this.reconnectMaxAttemptes = reconnectMaxAttemptes || 10;
+    this.defaultTimeoutMs = rpc?.defaultTimeoutMs;
+    this.maxInflight = rpc?.maxInflight;
+    this.defaultContentType =
+      serialization?.defaultContentType || 'application/xjson';
+    this.contentTypeByTarget = serialization?.contentTypeByTarget || {};
+    this.observer = observer;
+
+    if (
+      this.defaultTimeoutMs !== undefined &&
+      (!Number.isFinite(this.defaultTimeoutMs) || this.defaultTimeoutMs < 0)
+    ) {
+      throw new Error(
+        'rpc.defaultTimeoutMs must be a finite non-negative number',
+      );
+    }
+    if (
+      this.maxInflight !== undefined &&
+      (!Number.isInteger(this.maxInflight) || this.maxInflight <= 0)
+    ) {
+      throw new Error('rpc.maxInflight must be a positive integer');
+    }
     this.eventChannels = [];
     this.eventChannelsArgs = {};
   }
 
   public async connect(): Promise<RpcContext> {
-    await this.connectMq();
-    if (Object.keys(this.eventChannelsArgs).length) {
-      Object.values(this.eventChannelsArgs).forEach((element) => {
-        element.handlerFunction = element.handlerFunction.bind(element.target);
-        this.createEventHandler(element);
-      });
+    if (this.closing || this.connectionState === 'closed') {
+      throw new RpcClosedError();
+    }
+    this.setConnectionState('connecting');
+    try {
+      await this.connectMq();
+      if (Object.keys(this.eventChannelsArgs).length) {
+        await Promise.all(
+          Object.values(this.eventChannelsArgs).map((element) => {
+            element.handlerFunction = element.handlerFunction.bind(
+              element.target,
+            );
+            return this.createEventHandler(element);
+          }),
+        );
+      }
+      this.lastConnectedAt = Date.now();
+      this.setConnectionState('ready');
+    } catch (error) {
+      this.lastDisconnectedAt = Date.now();
+      this.setConnectionState('disconnected');
+      throw error;
     }
   }
 
   public async close(): Promise<void> {
-    this.logger('disconnectiong from smqp server...');
-    await this.channel?.close();
+    if (this.connectionState === 'closed') {
+      return;
+    }
+    this.closing = true;
+    this.setConnectionState('closing');
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    this.reconnectLock = false;
+    this.rejectAllPending(() => new RpcClosedError(), 'closed');
+    this.logger('disconnecting from amqp server...');
+
+    const eventChannels = this.eventChannels.splice(0);
+    await Promise.all(
+      eventChannels.map(async (eventChannel) => {
+        try {
+          await eventChannel.close();
+        } catch (_) {
+          return;
+        }
+      }),
+    );
+
+    const channel = this.channel;
     this.channel = undefined;
-    await this.connection?.close();
+    if (channel) {
+      try {
+        await channel.close();
+      } catch (_) {
+        // The transport may already be closed.
+      }
+    }
+
+    const connection = this.connection;
     this.connection = undefined;
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (_) {
+        // The transport may already be closed.
+      }
+    }
+    this.replyConsumerReady = false;
+    this.readyEventConsumers = 0;
+    this.setConnectionState('closed');
     this.logger('amqp server disconnected');
+  }
+
+  public isReady(): boolean {
+    return this.connectionState === 'ready' && this.replyConsumerReady;
+  }
+
+  public getSnapshot(): KinopioSnapshot {
+    return {
+      state: this.connectionState,
+      pendingRpc: this.rpcResolvers.size,
+      replyConsumerReady: this.replyConsumerReady,
+      readyEventConsumers: this.readyEventConsumers,
+      expectedEventConsumers: Object.keys(this.eventChannelsArgs).length,
+      reconnectAttempts: this.numAttempts,
+      lateReplies: this.lateReplies,
+      observerErrors: this.observerErrors,
+      lastConnectedAt: this.lastConnectedAt,
+      lastDisconnectedAt: this.lastDisconnectedAt,
+    };
   }
 
   public buildRpcProxy = (workerCtx: any = {}): RpcContext => {
@@ -236,7 +578,7 @@ export class Kinopio {
             { serviceName },
             {
               get: (serviceTarget, functionName) => {
-                return (payload: any) => {
+                return (payload?: RpcPayload, options?: RpcCallOptions) => {
                   if (process.env.OPENTELEMETRY_INSTRUMENT === 'true') {
                     const output: Carrier = {};
                     propagation.inject(context.active(), output);
@@ -255,6 +597,7 @@ export class Kinopio {
                     functionName.toString(),
                     payload,
                     target.workerCtx,
+                    options,
                   );
                 };
               },
@@ -462,6 +805,9 @@ export class Kinopio {
     await eventChannel.consume(
       eventQueue.queue,
       (message) => {
+        if (!message) {
+          return;
+        }
         let messageContent = this.parseMessage(message);
         if (this.entrypointHooks.processResponse) {
           messageContent = this.entrypointHooks.processResponse(messageContent);
@@ -481,6 +827,7 @@ export class Kinopio {
         noAck: true,
       },
     );
+    this.readyEventConsumers += 1;
   };
 
   protected dispatchEvent = (
@@ -504,76 +851,277 @@ export class Kinopio {
     functionName: string,
     payload: RpcPayload = {},
     workerCtx: any = {},
-  ) => {
+    options: RpcCallOptions = {},
+  ): Promise<any> => {
     const routingKey = `${serviceName}.${functionName}`;
     const correlationId = uuid();
-    return new Promise((resolve, reject) => {
-      if (!this.channel) {
-        reject('Channel not ready');
-      }
-      this.rpcResolvers[correlationId] = { resolve, reject };
-      const { args = [], kwargs = {} } = payload;
-      const rpcPayload = { args, kwargs };
+    const contentType = this.resolveContentType(
+      serviceName,
+      functionName,
+      workerCtx,
+      options,
+    );
+    const timeoutMs =
+      options.timeoutMs === undefined
+        ? this.defaultTimeoutMs
+        : options.timeoutMs;
 
-      this.entrypointHooks.onRequest &&
-        this.entrypointHooks.onRequest(serviceName, functionName, rpcPayload);
-
-      this.requestLogger(
-        '%s: %s() payload: %o',
-        correlationId,
-        routingKey,
-        rpcPayload,
+    if (
+      timeoutMs !== undefined &&
+      (!Number.isFinite(timeoutMs) || timeoutMs < 0)
+    ) {
+      throw new RpcSerializationError(
+        'RPC timeoutMs must be a finite non-negative number',
+        contentType,
       );
-      this.logger('workerCtx: %o', workerCtx);
+    }
 
-      this.channel!.publish(
-        'nameko-rpc',
-        routingKey,
-        new Buffer(JSON.stringify(rpcPayload)),
-        {
+    const { args = [], kwargs = {} } = payload || {};
+    const rpcPayload = { args, kwargs };
+    let body: Buffer;
+    try {
+      body = Buffer.from(JSON.stringify(rpcPayload));
+    } catch (error) {
+      const serializationError = new RpcSerializationError(
+        `Unable to serialize RPC request ${routingKey}`,
+        contentType,
+        error,
+      );
+      this.observeRejectedCall(
+        serviceName,
+        functionName,
+        contentType,
+        0,
+        'serialization_error',
+        serializationError,
+      );
+      throw serializationError;
+    }
+
+    if (options.signal?.aborted) {
+      const cancelledError = new RpcCancelledError('not_sent');
+      this.observeRejectedCall(
+        serviceName,
+        functionName,
+        contentType,
+        body.length,
+        'cancelled',
+        cancelledError,
+      );
+      throw cancelledError;
+    }
+
+    const channel = this.channel;
+    if (!channel || this.closing || this.connectionState === 'closed') {
+      const notReadyError = this.closing
+        ? new RpcClosedError('not_sent')
+        : new RpcNotReadyError();
+      this.observeRejectedCall(
+        serviceName,
+        functionName,
+        contentType,
+        body.length,
+        this.closing ? 'closed' : 'not_ready',
+        notReadyError,
+      );
+      throw notReadyError;
+    }
+
+    if (
+      this.maxInflight !== undefined &&
+      this.rpcResolvers.size >= this.maxInflight
+    ) {
+      const overloadedError = new RpcOverloadedError(this.maxInflight);
+      this.observeRejectedCall(
+        serviceName,
+        functionName,
+        contentType,
+        body.length,
+        'overloaded',
+        overloadedError,
+      );
+      throw overloadedError;
+    }
+
+    this.entrypointHooks.onRequest &&
+      this.entrypointHooks.onRequest(serviceName, functionName, rpcPayload);
+
+    this.requestLogger(
+      '%s: %s() payload: %o',
+      correlationId,
+      routingKey,
+      rpcPayload,
+    );
+    this.logger('workerCtx: %o', workerCtx);
+    const headers = { ...(workerCtx || {}) };
+    delete headers.content_type;
+
+    return new Promise((resolve, reject) => {
+      const pendingCall: PendingCall = {
+        resolve,
+        reject,
+        contentType,
+        service: serviceName,
+        method: functionName,
+        requestBytes: body.length,
+        startedAt: process.hrtime(),
+        deliveryState: 'not_sent',
+        signal: options.signal,
+      };
+
+      if (timeoutMs !== undefined && timeoutMs > 0) {
+        pendingCall.timeout = setTimeout(() => {
+          this.settlePending(
+            correlationId,
+            'timeout',
+            new RpcTimeoutError(serviceName, functionName, timeoutMs),
+          );
+        }, timeoutMs);
+      }
+
+      if (options.signal) {
+        pendingCall.abortHandler = () => {
+          this.settlePending(
+            correlationId,
+            'cancelled',
+            new RpcCancelledError(pendingCall.deliveryState),
+          );
+        };
+        options.signal.addEventListener('abort', pendingCall.abortHandler, {
+          once: true,
+        });
+      }
+
+      this.rpcResolvers.set(correlationId, pendingCall);
+      this.safeObserve('onRpcStart', this.rpcStartEvent(pendingCall));
+
+      try {
+        channel.publish('nameko-rpc', routingKey, body, {
           correlationId,
+          contentType,
+          headers,
           replyTo: this.replyToId,
-          headers: workerCtx,
           contentEncoding: 'utf-8',
-          contentType: workerCtx.content_type || 'application/xjson',
           deliveryMode: 2,
           priority: workerCtx.priority || 0,
-        },
-      );
+        });
+        pendingCall.deliveryState = 'unknown';
+      } catch (error) {
+        this.settlePending(
+          correlationId,
+          'publish_error',
+          new RpcPublishError(error),
+        );
+      }
     });
   };
 
   protected consumeQueue = (message: any) => {
+    if (!message) {
+      this.replyConsumerReady = false;
+      return;
+    }
     const { correlationId } = message.properties;
 
-    if (correlationId in this.rpcResolvers) {
-      const messageContent = this.parseMessage(message);
-
-      const resolver = this.rpcResolvers[correlationId];
-      this.rpcResolvers[correlationId] = undefined;
-
-      this.responseLogger('%s: payload: %o', correlationId, messageContent);
-
-      if (messageContent.error) {
-        resolver.reject(
-          new RpcError(
-            messageContent.error.value,
-            messageContent.error.exc_args,
-            messageContent.error.exc_type,
-            messageContent.error.exc_path,
-          ),
-        );
-      } else {
-        if (this.entrypointHooks.processResponse) {
-          messageContent.result = this.entrypointHooks.processResponse(
-            messageContent.result,
-          );
-        }
-        this.entrypointHooks.onResponse &&
-          this.entrypointHooks.onResponse(messageContent.result);
-        resolver.resolve(messageContent.result);
-      }
+    const pendingCall = this.rpcResolvers.get(correlationId);
+    if (!pendingCall) {
+      this.lateReplies += 1;
+      this.safeObserve('onLateReply', {
+        contentType: message.properties.contentType,
+      });
+      return;
     }
+    pendingCall.deliveryState = 'confirmed';
+
+    const decodeStartedAt = process.hrtime();
+    let parsedMessage: ParsedMessage;
+    try {
+      parsedMessage = this.decodeMessage(message, pendingCall.contentType);
+    } catch (error) {
+      const serializationError =
+        error instanceof KinopioError
+          ? error
+          : new RpcSerializationError(
+              'Unable to decode RPC response',
+              message.properties.contentType,
+              error,
+            );
+      this.settlePending(
+        correlationId,
+        'serialization_error',
+        serializationError,
+        undefined,
+        this.failedResponseMetadata(
+          message,
+          pendingCall.contentType,
+          decodeStartedAt,
+        ),
+      );
+      return;
+    }
+
+    const messageContent = parsedMessage.content;
+    if (
+      !messageContent ||
+      typeof messageContent !== 'object' ||
+      Array.isArray(messageContent)
+    ) {
+      this.settlePending(
+        correlationId,
+        'serialization_error',
+        new RpcSerializationError(
+          'RPC response must be a Nameko result/error envelope',
+          parsedMessage.contentType,
+        ),
+        undefined,
+        parsedMessage,
+      );
+      return;
+    }
+    this.responseLogger('%s: payload: %o', correlationId, messageContent);
+
+    if (messageContent.error) {
+      this.settlePending(
+        correlationId,
+        'remote_error',
+        new RpcError(
+          messageContent.error.value,
+          messageContent.error.exc_args,
+          messageContent.error.exc_type,
+          messageContent.error.exc_path,
+        ),
+        undefined,
+        parsedMessage,
+      );
+      return;
+    }
+
+    try {
+      if (this.entrypointHooks.processResponse) {
+        messageContent.result = this.entrypointHooks.processResponse(
+          messageContent.result,
+        );
+      }
+      this.entrypointHooks.onResponse &&
+        this.entrypointHooks.onResponse(messageContent.result);
+    } catch (error) {
+      this.settlePending(
+        correlationId,
+        'response_processing_error',
+        error,
+        undefined,
+        parsedMessage,
+      );
+      return;
+    }
+
+    this.settlePending(
+      correlationId,
+      'success',
+      undefined,
+      messageContent.result,
+      parsedMessage,
+    );
   };
 
   private replyHealthCheck = (msg: any) => {
@@ -587,14 +1135,15 @@ export class Kinopio {
   };
 
   private consumeHealthcheck = (msg: any) => {
+    if (!msg) {
+      return;
+    }
     const correlationId = msg.properties.correlationId;
 
-    if (correlationId in this.rpcResolvers) {
+    if (this.rpcResolvers.has(correlationId)) {
       // content is 'ok'
       const content = msg.content.toString();
-      const resolver = this.rpcResolvers[correlationId];
-      delete this.rpcResolvers[correlationId];
-      resolver.resolve(content);
+      this.settlePending(correlationId, 'success', undefined, content);
     }
   };
 
@@ -652,17 +1201,32 @@ export class Kinopio {
    *   ...handle error action
    * });
    */
+  // tslint:disable-next-line:member-ordering
   public healthcheck = (payload: RpcPayload = {}, workerCtx: object = {}) => {
     const correlationId = uuid();
 
     return new Promise((resolve, reject) => {
-      if (!this.channel) {
-        throw new Error('no channel, call rpcSetup() first');
+      const channel = this.channel;
+      if (!channel) {
+        reject(new RpcNotReadyError());
+        return;
       }
 
-      this.rpcResolvers[correlationId] = { resolve, reject };
       const { args = [], kwargs = {} } = payload;
       const rpcPayload = { args, kwargs };
+      const body = Buffer.from(JSON.stringify(rpcPayload));
+      const pendingCall: PendingCall = {
+        resolve,
+        reject,
+        service: this.serviceName,
+        method: this.healthcheckRouteKey,
+        contentType: 'application/xjson',
+        requestBytes: body.length,
+        startedAt: process.hrtime(),
+        deliveryState: 'not_sent',
+      };
+      this.rpcResolvers.set(correlationId, pendingCall);
+      this.safeObserve('onRpcStart', this.rpcStartEvent(pendingCall));
 
       this.logger(
         '%s: %s() payload: %o',
@@ -672,11 +1236,8 @@ export class Kinopio {
       );
       this.logger('workerCtx: %o', workerCtx);
 
-      this.channel.publish(
-        this.serviceName,
-        this.healthcheckRouteKey,
-        new Buffer(JSON.stringify(rpcPayload)),
-        {
+      try {
+        channel.publish(this.serviceName, this.healthcheckRouteKey, body, {
           correlationId,
           replyTo: this.replyToId,
           headers: workerCtx,
@@ -684,32 +1245,40 @@ export class Kinopio {
           contentType: 'application/xjson',
           deliveryMode: 2,
           priority: 0,
-        },
-      );
+        });
+        pendingCall.deliveryState = 'unknown';
+      } catch (error) {
+        this.settlePending(
+          correlationId,
+          'publish_error',
+          new RpcPublishError(error),
+        );
+      }
     });
   };
 
+  // tslint:disable-next-line:member-ordering
   protected connectMq = async (): Promise<void> => {
     this.connection = await amqp.connect(this.mqOptions);
 
     this.connection.on('close', () => {
       this.logger('connection close');
-      this.reestablishConnection();
+      this.handleTransportFailure('connection closed');
     });
 
     this.connection.on('error', () => {
       this.logger('connection error');
-      this.reestablishConnection();
+      this.handleTransportFailure('connection error');
     });
 
     this.channel = await this.connection.createChannel();
     this.channel.on('close', () => {
       this.logger('channel close');
-      this.reestablishConnection();
+      this.handleTransportFailure('channel closed');
     });
     this.channel.on('error', () => {
       this.logger('channel error');
-      this.reestablishConnection();
+      this.handleTransportFailure('channel error');
     });
 
     await this.prepareHealthcheck();
@@ -729,30 +1298,321 @@ export class Kinopio {
     await this.channel.consume(queueInfo.queue, this.consumeQueue, {
       noAck: true,
     });
+    this.replyConsumerReady = true;
     this.numAttempts = 0;
     await this.userCallbackOnConnect(this.connection, this.channel);
   };
 
+  // tslint:disable-next-line:member-ordering
   protected parseMessage(message: any) {
-    const rawMessageContent = message.content.toString();
-    const messageContent = JSON.parse(rawMessageContent, parseXJson);
-    return messageContent;
+    return this.decodeMessage(message).content;
   }
 
+  private decodeMessage(
+    message: any,
+    expectedContentType?: RpcContentType,
+  ): ParsedMessage {
+    const startedAt = process.hrtime();
+    const rawMessageContent = message.content.toString();
+    const actualContentType = message.properties?.contentType as
+      | string
+      | undefined;
+    const contentTypeStatus = actualContentType ? 'matched' : 'missing';
+    const contentType = actualContentType || 'application/xjson';
+
+    if (
+      contentType !== 'application/json' &&
+      contentType !== 'application/xjson'
+    ) {
+      throw new RpcSerializationError(
+        `Unsupported RPC response content type: ${contentType}`,
+        contentType,
+      );
+    }
+    if (expectedContentType && actualContentType !== undefined) {
+      if (contentType !== expectedContentType) {
+        throw new RpcContentTypeMismatchError(expectedContentType, contentType);
+      }
+    }
+
+    const legacyTags: Array<'datetime' | 'date' | 'decimal'> = [];
+    let content: any;
+    try {
+      if (contentType === 'application/json') {
+        content = JSON.parse(rawMessageContent);
+        if (
+          rawMessageContent.includes('"__type__"') &&
+          rawMessageContent.includes('"__value__"') &&
+          containsKombuTypeEnvelope(content)
+        ) {
+          throw new RpcSerializationError(
+            'Standard JSON response contains a Kombu typed envelope',
+            contentType,
+          );
+        }
+      } else {
+        const tagPattern = /"!!(datetime|date|decimal) /g;
+        let tagMatch = tagPattern.exec(rawMessageContent);
+        while (tagMatch !== null) {
+          legacyTags.push(tagMatch[1] as 'datetime' | 'date' | 'decimal');
+          tagMatch = tagPattern.exec(rawMessageContent);
+        }
+        content = legacyTags.length
+          ? JSON.parse(rawMessageContent, parseXJson)
+          : JSON.parse(rawMessageContent);
+      }
+    } catch (error) {
+      if (error instanceof KinopioError) {
+        throw error;
+      }
+      throw new RpcSerializationError(
+        `Invalid ${contentType} RPC response`,
+        contentType,
+        error,
+      );
+    }
+
+    return {
+      content,
+      contentType,
+      contentTypeStatus,
+      payloadBytes: message.content.length,
+      decodeDurationMs: this.elapsedMs(startedAt),
+      legacyTags: Array.from(new Set(legacyTags)),
+    };
+  }
+
+  private resolveContentType(
+    serviceName: string,
+    functionName: string,
+    workerCtx: any,
+    options: RpcCallOptions,
+  ): RpcContentType {
+    const target = `${serviceName}.${functionName}`;
+    // workerCtx.content_type is a compatibility bridge only. New callers
+    // should use RpcCallOptions or serialization.contentTypeByTarget.
+    const contentType =
+      options.contentType ||
+      this.contentTypeByTarget[target] ||
+      workerCtx?.content_type ||
+      this.defaultContentType;
+    if (
+      contentType !== 'application/json' &&
+      contentType !== 'application/xjson'
+    ) {
+      throw new RpcSerializationError(
+        `Unsupported RPC request content type: ${contentType}`,
+        contentType,
+      );
+    }
+    return contentType;
+  }
+
+  private settlePending(
+    correlationId: string,
+    outcome: RpcOutcome,
+    error?: any,
+    result?: any,
+    responseMetadata?: ResponseMetadata,
+  ): boolean {
+    const pendingCall = this.rpcResolvers.get(correlationId);
+    if (!pendingCall) {
+      return false;
+    }
+
+    this.rpcResolvers.delete(correlationId);
+    if (pendingCall.timeout) {
+      clearTimeout(pendingCall.timeout);
+    }
+    if (pendingCall.signal && pendingCall.abortHandler) {
+      pendingCall.signal.removeEventListener('abort', pendingCall.abortHandler);
+    }
+
+    if (outcome === 'success' || outcome === 'remote_error') {
+      pendingCall.deliveryState = 'confirmed';
+    }
+    if (
+      error instanceof KinopioError &&
+      error.deliveryState === 'not_sent' &&
+      pendingCall.deliveryState !== 'not_sent'
+    ) {
+      error.deliveryState = pendingCall.deliveryState;
+    }
+
+    const finishEvent: RpcFinishEvent = {
+      ...this.rpcStartEvent(pendingCall),
+      outcome,
+      durationMs: this.elapsedMs(pendingCall.startedAt),
+      deliveryState: pendingCall.deliveryState,
+      inflight: this.rpcResolvers.size,
+    };
+    if (responseMetadata) {
+      finishEvent.responseContentType = responseMetadata.contentType;
+      finishEvent.responseContentTypeStatus =
+        responseMetadata.contentTypeStatus;
+      finishEvent.responseBytes = responseMetadata.payloadBytes;
+      finishEvent.decodeDurationMs = responseMetadata.decodeDurationMs;
+      finishEvent.legacyTags = responseMetadata.legacyTags;
+    }
+    this.safeObserve('onRpcFinish', finishEvent);
+
+    if (error !== undefined) {
+      pendingCall.reject(error);
+    } else {
+      pendingCall.resolve(result);
+    }
+    return true;
+  }
+
+  private rejectAllPending(
+    errorFactory: () => KinopioError,
+    outcome: RpcOutcome,
+  ): void {
+    Array.from(this.rpcResolvers.keys()).forEach((correlationId) => {
+      this.settlePending(correlationId, outcome, errorFactory());
+    });
+  }
+
+  private failedResponseMetadata(
+    message: any,
+    expectedContentType: RpcContentType,
+    startedAt: [number, number],
+  ): ResponseMetadata {
+    const actualContentType = message.properties?.contentType as
+      | string
+      | undefined;
+    let contentTypeStatus: ResponseContentTypeStatus;
+    if (!actualContentType) {
+      contentTypeStatus = 'missing';
+    } else if (
+      actualContentType !== 'application/json' &&
+      actualContentType !== 'application/xjson'
+    ) {
+      contentTypeStatus = 'unknown';
+    } else if (actualContentType !== expectedContentType) {
+      contentTypeStatus = 'mismatch';
+    } else {
+      contentTypeStatus = 'matched';
+    }
+    return {
+      contentTypeStatus,
+      contentType: actualContentType || 'application/xjson',
+      payloadBytes: message.content.length,
+      decodeDurationMs: this.elapsedMs(startedAt),
+      legacyTags: [],
+    };
+  }
+
+  private rpcStartEvent(pendingCall: PendingCall): RpcStartEvent {
+    return {
+      clientService: this.serviceName,
+      service: pendingCall.service,
+      method: pendingCall.method,
+      contentType: pendingCall.contentType,
+      requestBytes: pendingCall.requestBytes,
+      inflight: this.rpcResolvers.size,
+    };
+  }
+
+  private observeRejectedCall(
+    service: string,
+    method: string,
+    contentType: RpcContentType,
+    requestBytes: number,
+    outcome: RpcOutcome,
+    error: KinopioError,
+  ): void {
+    const startEvent: RpcStartEvent = {
+      service,
+      method,
+      contentType,
+      requestBytes,
+      clientService: this.serviceName,
+      inflight: this.rpcResolvers.size,
+    };
+    this.safeObserve('onRpcStart', startEvent);
+    this.safeObserve('onRpcFinish', {
+      ...startEvent,
+      outcome,
+      durationMs: 0,
+      deliveryState: error.deliveryState,
+      inflight: this.rpcResolvers.size,
+    });
+  }
+
+  private safeObserve(
+    method: keyof KinopioObserver,
+    event:
+      | ConnectionStateEvent
+      | RpcStartEvent
+      | RpcFinishEvent
+      | LateReplyEvent,
+  ): void {
+    const callback = this.observer?.[method] as
+      | ((observerEvent: any) => void)
+      | undefined;
+    if (!callback) {
+      return;
+    }
+    try {
+      callback(event);
+    } catch (_) {
+      this.observerErrors += 1;
+    }
+  }
+
+  private setConnectionState(state: ConnectionState): void {
+    if (state === this.connectionState) {
+      return;
+    }
+    const previous = this.connectionState;
+    this.connectionState = state;
+    this.safeObserve('onConnectionStateChange', { previous, current: state });
+  }
+
+  private elapsedMs(startedAt: [number, number]): number {
+    const elapsed = process.hrtime(startedAt);
+    return elapsed[0] * 1000 + elapsed[1] / 1e6;
+  }
+
+  private handleTransportFailure(message: string): void {
+    if (this.closing) {
+      return;
+    }
+    this.channel = undefined;
+    this.connection = undefined;
+    this.replyConsumerReady = false;
+    this.readyEventConsumers = 0;
+    this.lastDisconnectedAt = Date.now();
+    this.rejectAllPending(
+      () => new RpcConnectionLostError(message),
+      'connection_lost',
+    );
+    this.setConnectionState('disconnected');
+    this.reestablishConnection();
+  }
+
+  // tslint:disable-next-line:member-ordering
   protected reestablishConnection() {
-    if (this.reconnectLock) {
+    if (this.reconnectLock || this.closing) {
       return;
     }
     this.reconnectLock = true;
+    this.setConnectionState('reconnecting');
     this.logger(
       `connection closed, try to connect in ${
         this.reconnectInterval / 1000
       } seconds`,
     );
-    setTimeout(this.reconnect, this.reconnectInterval);
+    this.reconnectTimer = setTimeout(this.reconnect, this.reconnectInterval);
   }
 
+  // tslint:disable-next-line:member-ordering
   protected reconnect = async () => {
+    this.reconnectTimer = undefined;
+    if (this.closing) {
+      return;
+    }
     this.logger(
       `trying to reconnect to amqp://${this.mqOptions.hostname}:${this.mqOptions.port}/${this.mqOptions.vhost}`,
     );
@@ -767,14 +1627,14 @@ export class Kinopio {
         this.logger(
           `failed to reconnect after ${this.reconnectMaxAttemptes} tries`,
         );
-        throw new Error(
-          `AMQP disconnected after ${this.reconnectMaxAttemptes} attempts`,
-        );
+        this.reconnectLock = false;
+        this.setConnectionState('disconnected');
+        return;
       }
       this.logger(
         `could not connect, trying again in ${timeout / 1000} seconds`,
       );
-      setTimeout(this.reconnect, this.reconnectInterval);
+      this.reconnectTimer = setTimeout(this.reconnect, timeout);
     }
   };
 }

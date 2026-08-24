@@ -23,6 +23,7 @@ interface TestService extends ServiceBase {
   repeat: RpcMethod;
   get_some_data: RpcMethod;
   get_some_xjson_data: RpcMethod;
+  get_some_json_data: RpcMethod;
   raise_noraml_exception: RpcMethod;
   raise_custom_exception: RpcMethod;
   return_worker_ctx: RpcMethod;
@@ -101,6 +102,19 @@ describe('rpc', () => {
       boolean: true,
       array: [1, 2, 3],
       object: { key: 'value' },
+    });
+  });
+
+  test('can request standard JSON with decimal and date strings', async () => {
+    await expect(
+      rpc.test_service.get_some_json_data(
+        {},
+        { contentType: 'application/json' },
+      ),
+    ).resolves.toEqual({
+      datetime: '2026-08-23T12:45:30.123456+00:00',
+      date: '2026-08-23',
+      decimal: '12345678901234567890.1200',
     });
   });
 

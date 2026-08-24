@@ -2,6 +2,10 @@
 serializer: xjson
 
 SERIALIZERS:
+  json:
+    encoder: json_serializer.encode
+    decoder: json_serializer.decode
+    content_type: application/json
   xjson:
     encoder: xjson.encode
     decoder: xjson.decode

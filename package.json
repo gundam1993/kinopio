@@ -1,12 +1,17 @@
 {
   "name": "kinopio",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "description": "a node client for nameko",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "packageManager": "pnpm@10.14.0",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "test": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json",
-    "coverage": "node -r dotenv/config node_modules/.bin/jest --config jest.config.json --coverage",
+    "test": "jest --config jest.config.json",
+    "test:unit": "jest --config jest.config.json --runInBand lib/__tests__/phase-a.test.ts",
+    "coverage": "jest --config jest.config.json --coverage",
     "build": "tsc --project tsconfig.json --declaration",
     "prepare": "pnpm build"
   },
@@ -17,24 +22,23 @@
   ],
   "license": "MIT",
   "devDependencies": {
+    "@opentelemetry/sdk-node": "^0.56.0",
     "@types/amqplib": "^0.10.8",
     "@types/humps": "^1.1.2",
-    "@types/jest": "^24.0.18",
+    "@types/jest": "^30.0.0",
     "dotenv": "^8.1.0",
     "humps": "^2.0.1",
-    "jest": "^24.9.0",
+    "jest": "^30.4.2",
     "prettier": "^2.0.2",
-    "ts-jest": "^24.0.2",
-    "ts-node": "^8.6.2",
+    "ts-jest": "^29.4.12",
+    "ts-node": "^10.9.2",
     "tslint": "^5.19.0",
     "tslint-config-airbnb": "^5.11.1",
     "tslint-config-prettier": "^1.18.0",
-    "typescript": "^5.3.3",
-    "@opentelemetry/sdk-node": "^0.56.0"
+    "typescript": "^5.3.3"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
-    "amqplib": "^0.10.9",
-    "uuid": "^13.0.0"
+    "amqplib": "^0.10.9"
   }
 }
