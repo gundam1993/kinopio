@@ -1,4 +1,5 @@
 # Kinopio
+
 *A node client of nameko*
 
 ## Installation
@@ -17,6 +18,7 @@ const kinopio = new Kinopio('gateway', {
   hostname: 'rabbitmq',
   rpc: {
     defaultTimeoutMs: 30_000,
+    healthcheckTimeoutMs: 5_000,
     maxInflight: 2_000,
   },
   serialization: {
@@ -46,6 +48,14 @@ Use `getSnapshot()` and a synchronous, non-throwing `observer` adapter to
 export connection, in-flight, duration, content-type and payload-size metrics.
 Kinopio isolates observer exceptions from RPC outcomes. It never sends payload,
 result or correlation IDs to the observer.
+
+## Connection lifecycle
+
+A `Kinopio` instance has a one-shot lifecycle. Unexpected AMQP connection,
+channel or reply-consumer failures trigger automatic reconnect on the same
+instance. Calling `close()` is terminal: it stops reconnecting, rejects pending
+RPCs and releases AMQP resources. Create a new instance instead of calling
+`connect()` again after `close()`.
 
 See [Phase A / Phase B Todo](./docs/phase-a-b-todo.md) for rollout constraints
 and the remaining connection/backpressure work.

@@ -8,6 +8,7 @@
   "transform": {
     "^.+\\.(t|j)sx?$": "ts-jest"
   },
+  "setupFiles": ["dotenv/config"],
   "testRegex": "(/__tests__/.*|(\\.|/)(test|spec))\\.(jsx?|tsx?)$",
   "moduleFileExtensions": [
     "ts",

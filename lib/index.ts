@@ -2,6 +2,8 @@ import { randomUUID as uuid } from 'crypto';
 import * as amqp from 'amqplib';
 import { context, propagation } from '@opentelemetry/api';
 
+const DEFAULT_HEALTHCHECK_TIMEOUT_MS = 5000;
+
 interface Carrier {
   traceparent?: string;
   tracestate?: string;
@@ -67,6 +69,7 @@ export type RpcOutcome =
   | 'remote_error'
   | 'timeout'
   | 'cancelled'
+  | 'invalid_argument'
   | 'not_ready'
   | 'overloaded'
   | 'publish_error'
@@ -152,6 +155,12 @@ export class RpcContentTypeMismatchError extends RpcSerializationError {
 export class RpcCancelledError extends KinopioError {
   constructor(deliveryState: DeliveryState) {
     super('RPC call was cancelled', 'RPC_CANCELLED', deliveryState);
+  }
+}
+
+export class RpcInvalidArgumentError extends KinopioError {
+  constructor(message: string) {
+    super(message, 'RPC_INVALID_ARGUMENT', 'not_sent');
   }
 }
 
@@ -310,6 +319,7 @@ export interface KinopioConfig {
   reconnectMaxAttemptes?: number;
   rpc?: {
     defaultTimeoutMs?: number;
+    healthcheckTimeoutMs?: number;
     maxInflight?: number;
   };
   serialization?: {
@@ -389,6 +399,7 @@ export class Kinopio {
   private numAttempts: number = 0;
   private eventChannelsArgs: { [key: string]: EventHandlerArgs } = {};
   private defaultTimeoutMs?: number;
+  private healthcheckTimeoutMs: number;
   private maxInflight?: number;
   private defaultContentType: RpcContentType;
   private contentTypeByTarget: Record<string, RpcContentType>;
@@ -442,6 +453,11 @@ export class Kinopio {
     this.reconnectInterval = reconnectInterval || 2000;
     this.reconnectMaxAttemptes = reconnectMaxAttemptes || 10;
     this.defaultTimeoutMs = rpc?.defaultTimeoutMs;
+    this.healthcheckTimeoutMs =
+      rpc?.healthcheckTimeoutMs ||
+      (rpc?.defaultTimeoutMs && rpc.defaultTimeoutMs > 0
+        ? rpc.defaultTimeoutMs
+        : DEFAULT_HEALTHCHECK_TIMEOUT_MS);
     this.maxInflight = rpc?.maxInflight;
     this.defaultContentType =
       serialization?.defaultContentType || 'application/xjson';
@@ -462,11 +478,20 @@ export class Kinopio {
     ) {
       throw new Error('rpc.maxInflight must be a positive integer');
     }
+    if (
+      rpc?.healthcheckTimeoutMs !== undefined &&
+      (!Number.isFinite(rpc.healthcheckTimeoutMs) ||
+        rpc.healthcheckTimeoutMs <= 0)
+    ) {
+      throw new Error(
+        'rpc.healthcheckTimeoutMs must be a finite positive number',
+      );
+    }
     this.eventChannels = [];
     this.eventChannelsArgs = {};
   }
 
-  public async connect(): Promise<RpcContext> {
+  public async connect(): Promise<void> {
     if (this.closing || this.connectionState === 'closed') {
       throw new RpcClosedError();
     }
@@ -476,9 +501,6 @@ export class Kinopio {
       if (Object.keys(this.eventChannelsArgs).length) {
         await Promise.all(
           Object.values(this.eventChannelsArgs).map((element) => {
-            element.handlerFunction = element.handlerFunction.bind(
-              element.target,
-            );
             return this.createEventHandler(element);
           }),
         );
@@ -487,7 +509,9 @@ export class Kinopio {
       this.setConnectionState('ready');
     } catch (error) {
       this.lastDisconnectedAt = Date.now();
-      this.setConnectionState('disconnected');
+      this.setConnectionState(
+        this.reconnectLock ? 'reconnecting' : 'disconnected',
+      );
       throw error;
     }
   }
@@ -870,10 +894,18 @@ export class Kinopio {
       timeoutMs !== undefined &&
       (!Number.isFinite(timeoutMs) || timeoutMs < 0)
     ) {
-      throw new RpcSerializationError(
+      const invalidArgumentError = new RpcInvalidArgumentError(
         'RPC timeoutMs must be a finite non-negative number',
-        contentType,
       );
+      this.observeRejectedCall(
+        serviceName,
+        functionName,
+        contentType,
+        0,
+        'invalid_argument',
+        invalidArgumentError,
+      );
+      throw invalidArgumentError;
     }
 
     const { args = [], kwargs = {} } = payload || {};
@@ -1016,9 +1048,17 @@ export class Kinopio {
     });
   };
 
-  protected consumeQueue = (message: any) => {
+  protected consumeQueue = (
+    message: any,
+    connection: amqp.ChannelModel | undefined = this.connection,
+    channel: amqp.Channel | undefined = this.channel,
+  ) => {
     if (!message) {
-      this.replyConsumerReady = false;
+      this.handleTransportFailure(
+        'RPC reply consumer cancelled',
+        connection,
+        channel,
+      );
       return;
     }
     const { correlationId } = message.properties;
@@ -1125,6 +1165,10 @@ export class Kinopio {
   };
 
   private replyHealthCheck = (msg: any) => {
+    if (!msg) {
+      this.handleTransportFailure('healthcheck request consumer cancelled');
+      return;
+    }
     this.channel?.sendToQueue(
       `rpc.reply-${this.healthcheckRouteKey}-${this.replyToId}`,
       Buffer.from('ok'),
@@ -1136,6 +1180,7 @@ export class Kinopio {
 
   private consumeHealthcheck = (msg: any) => {
     if (!msg) {
+      this.handleTransportFailure('healthcheck reply consumer cancelled');
       return;
     }
     const correlationId = msg.properties.correlationId;
@@ -1148,10 +1193,16 @@ export class Kinopio {
   };
 
   private prepareHealthcheck = async () => {
-    await this.channel?.assertExchange(this.serviceName, 'direct');
+    const connection = this.connection;
+    const channel = this.channel;
+    if (!channel) {
+      throw new RpcNotReadyError();
+    }
+
+    await channel.assertExchange(this.serviceName, 'direct');
     // healthcheck rpc queue
     const healthCheckQueueName = `rpc.${this.healthcheckRouteKey}-${this.replyToId}`;
-    const healthCheckQueueInfo = await this.channel?.assertQueue(
+    const healthCheckQueueInfo = await channel.assertQueue(
       healthCheckQueueName,
       {
         exclusive: true,
@@ -1160,14 +1211,24 @@ export class Kinopio {
       },
     );
 
-    await this.channel?.bindQueue(
+    await channel.bindQueue(
       healthCheckQueueInfo?.queue || '',
       this.serviceName,
       this.healthcheckRouteKey,
     );
-    await this.channel?.consume(
+    await channel.consume(
       healthCheckQueueInfo?.queue || '',
-      this.replyHealthCheck,
+      (message) => {
+        if (!message) {
+          this.handleTransportFailure(
+            'healthcheck request consumer cancelled',
+            connection,
+            channel,
+          );
+          return;
+        }
+        this.replyHealthCheck(message);
+      },
       {
         noAck: true,
       },
@@ -1175,7 +1236,7 @@ export class Kinopio {
 
     // healthcheck rpc queue reply
     const healthCheckQueueNameReply = `rpc.reply-${this.healthcheckRouteKey}-${this.replyToId}`;
-    const healthCheckQueueInfoReply = await this.channel?.assertQueue(
+    const healthCheckQueueInfoReply = await channel.assertQueue(
       healthCheckQueueNameReply,
       {
         exclusive: true,
@@ -1183,9 +1244,19 @@ export class Kinopio {
         durable: false,
       },
     );
-    await this.channel?.consume(
+    await channel.consume(
       healthCheckQueueInfoReply?.queue || '',
-      this.consumeHealthcheck,
+      (message) => {
+        if (!message) {
+          this.handleTransportFailure(
+            'healthcheck reply consumer cancelled',
+            connection,
+            channel,
+          );
+          return;
+        }
+        this.consumeHealthcheck(message);
+      },
       {
         noAck: true,
       },
@@ -1207,14 +1278,42 @@ export class Kinopio {
 
     return new Promise((resolve, reject) => {
       const channel = this.channel;
-      if (!channel) {
-        reject(new RpcNotReadyError());
+      if (!channel || this.closing || this.connectionState === 'closed') {
+        const notReadyError = this.closing
+          ? new RpcClosedError('not_sent')
+          : new RpcNotReadyError();
+        this.observeRejectedCall(
+          this.serviceName,
+          this.healthcheckRouteKey,
+          'application/xjson',
+          0,
+          this.closing ? 'closed' : 'not_ready',
+          notReadyError,
+        );
+        reject(notReadyError);
         return;
       }
 
       const { args = [], kwargs = {} } = payload;
       const rpcPayload = { args, kwargs };
       const body = Buffer.from(JSON.stringify(rpcPayload));
+      if (
+        this.maxInflight !== undefined &&
+        this.rpcResolvers.size >= this.maxInflight
+      ) {
+        const overloadedError = new RpcOverloadedError(this.maxInflight);
+        this.observeRejectedCall(
+          this.serviceName,
+          this.healthcheckRouteKey,
+          'application/xjson',
+          body.length,
+          'overloaded',
+          overloadedError,
+        );
+        reject(overloadedError);
+        return;
+      }
+
       const pendingCall: PendingCall = {
         resolve,
         reject,
@@ -1225,6 +1324,17 @@ export class Kinopio {
         startedAt: process.hrtime(),
         deliveryState: 'not_sent',
       };
+      pendingCall.timeout = setTimeout(() => {
+        this.settlePending(
+          correlationId,
+          'timeout',
+          new RpcTimeoutError(
+            this.serviceName,
+            this.healthcheckRouteKey,
+            this.healthcheckTimeoutMs,
+          ),
+        );
+      }, this.healthcheckTimeoutMs);
       this.rpcResolvers.set(correlationId, pendingCall);
       this.safeObserve('onRpcStart', this.rpcStartEvent(pendingCall));
 
@@ -1259,26 +1369,28 @@ export class Kinopio {
 
   // tslint:disable-next-line:member-ordering
   protected connectMq = async (): Promise<void> => {
-    this.connection = await amqp.connect(this.mqOptions);
+    const connection = await amqp.connect(this.mqOptions);
+    this.connection = connection;
 
-    this.connection.on('close', () => {
+    connection.on('close', () => {
       this.logger('connection close');
-      this.handleTransportFailure('connection closed');
+      this.handleTransportFailure('connection closed', connection);
     });
 
-    this.connection.on('error', () => {
+    connection.on('error', () => {
       this.logger('connection error');
-      this.handleTransportFailure('connection error');
+      this.handleTransportFailure('connection error', connection);
     });
 
-    this.channel = await this.connection.createChannel();
-    this.channel.on('close', () => {
+    const channel = await connection.createChannel();
+    this.channel = channel;
+    channel.on('close', () => {
       this.logger('channel close');
-      this.handleTransportFailure('channel closed');
+      this.handleTransportFailure('channel closed', connection, channel);
     });
-    this.channel.on('error', () => {
+    channel.on('error', () => {
       this.logger('channel error');
-      this.handleTransportFailure('channel error');
+      this.handleTransportFailure('channel error', connection, channel);
     });
 
     await this.prepareHealthcheck();
@@ -1288,19 +1400,21 @@ export class Kinopio {
     );
 
     const queueName = `${this.queuePrefix}-${this.replyToId}`;
-    const queueInfo = await this.channel.assertQueue(queueName, {
+    const queueInfo = await channel.assertQueue(queueName, {
       exclusive: true,
       autoDelete: true,
       durable: false,
     });
 
-    await this.channel.bindQueue(queueInfo.queue, 'nameko-rpc', this.replyToId);
-    await this.channel.consume(queueInfo.queue, this.consumeQueue, {
-      noAck: true,
-    });
+    await channel.bindQueue(queueInfo.queue, 'nameko-rpc', this.replyToId);
+    await channel.consume(
+      queueInfo.queue,
+      (message) => this.consumeQueue(message, connection, channel),
+      { noAck: true },
+    );
     this.replyConsumerReady = true;
     this.numAttempts = 0;
-    await this.userCallbackOnConnect(this.connection, this.channel);
+    await this.userCallbackOnConnect(connection, channel);
   };
 
   // tslint:disable-next-line:member-ordering
@@ -1575,10 +1689,23 @@ export class Kinopio {
     return elapsed[0] * 1000 + elapsed[1] / 1e6;
   }
 
-  private handleTransportFailure(message: string): void {
+  private handleTransportFailure(
+    message: string,
+    expectedConnection: amqp.ChannelModel | undefined = this.connection,
+    expectedChannel: amqp.Channel | undefined = this.channel,
+  ): void {
     if (this.closing) {
       return;
     }
+    if (
+      (expectedConnection !== undefined &&
+        expectedConnection !== this.connection) ||
+      (expectedChannel !== undefined && expectedChannel !== this.channel)
+    ) {
+      return;
+    }
+    const channel = this.channel;
+    const connection = this.connection;
     this.channel = undefined;
     this.connection = undefined;
     this.replyConsumerReady = false;
@@ -1589,7 +1716,28 @@ export class Kinopio {
       'connection_lost',
     );
     this.setConnectionState('disconnected');
+    void this.retireTransport(channel, connection);
     this.reestablishConnection();
+  }
+
+  private async retireTransport(
+    channel?: amqp.Channel,
+    connection?: amqp.ChannelModel,
+  ): Promise<void> {
+    if (channel) {
+      try {
+        await channel.close();
+      } catch (_) {
+        // The channel may already have been closed by the broker.
+      }
+    }
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (_) {
+        // The connection may already have been closed by the broker.
+      }
+    }
   }
 
   // tslint:disable-next-line:member-ordering
@@ -1634,6 +1782,7 @@ export class Kinopio {
       this.logger(
         `could not connect, trying again in ${timeout / 1000} seconds`,
       );
+      this.setConnectionState('reconnecting');
       this.reconnectTimer = setTimeout(this.reconnect, timeout);
     }
   };

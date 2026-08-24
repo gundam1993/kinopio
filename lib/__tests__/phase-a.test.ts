@@ -4,8 +4,10 @@ import {
   KinopioObserver,
   RpcCallOptions,
   RpcCancelledError,
+  RpcClosedError,
   RpcConnectionLostError,
   RpcContentTypeMismatchError,
+  RpcInvalidArgumentError,
   RpcOverloadedError,
   RpcPayload,
   RpcPublishError,
@@ -34,6 +36,16 @@ class TestKinopio extends Kinopio {
 
   public failTransport(): void {
     (this as any).handleTransportFailure('test disconnect');
+  }
+
+  public setConnectMqImplementation(implementation: () => Promise<void>): void {
+    (this as any).connectMq = implementation;
+  }
+
+  public async simulateReconnectAttempt(): Promise<void> {
+    (this as any).reconnectLock = true;
+    (this as any).setConnectionState('reconnecting');
+    await this.reconnect();
   }
 }
 
@@ -145,6 +157,25 @@ describe('Phase A RPC lifecycle', () => {
     await client.close();
   });
 
+  test('reply consumer cancellation rejects pending calls and retires the transport', async () => {
+    const { channel, client } = makeClient();
+    const pending = client.invoke('locations', 'pending');
+
+    client.deliver(null);
+
+    await expect(pending).rejects.toBeInstanceOf(RpcConnectionLostError);
+    await expect(
+      client.invoke('locations', 'after_cancel'),
+    ).rejects.toMatchObject({ code: 'RPC_NOT_READY' });
+    expect(client.getSnapshot()).toMatchObject({
+      state: 'reconnecting',
+      pendingRpc: 0,
+      replyConsumerReady: false,
+    });
+    expect(channel.close).toHaveBeenCalledTimes(1);
+    await client.close();
+  });
+
   test('AbortSignal cancels and removes a pending call', async () => {
     const { client } = makeClient();
     const controller = new AbortController();
@@ -188,6 +219,52 @@ describe('Phase A RPC lifecycle', () => {
       state: 'closed',
       pendingRpc: 0,
     });
+    await expect(client.connect()).rejects.toBeInstanceOf(RpcClosedError);
+  });
+
+  test('keeps reconnecting state while another retry is scheduled', async () => {
+    jest.useFakeTimers();
+    const states: string[] = [];
+    const { client } = makeClient({
+      reconnectInterval: 25,
+      reconnectMaxAttemptes: 2,
+      observer: {
+        onConnectionStateChange: ({ current }) => states.push(current),
+      },
+    });
+    client.setConnectMqImplementation(async () => {
+      throw new Error('broker unavailable');
+    });
+
+    await client.simulateReconnectAttempt();
+
+    expect(client.getSnapshot().state).toBe('reconnecting');
+    expect(states).toEqual(['reconnecting', 'connecting', 'reconnecting']);
+    await client.close();
+  });
+
+  test('healthcheck has a finite fallback timeout and cleans up', async () => {
+    jest.useFakeTimers();
+    const { client } = makeClient();
+    const call = client.healthcheck();
+
+    jest.advanceTimersByTime(5000);
+
+    await expect(call).rejects.toBeInstanceOf(RpcTimeoutError);
+    expect(client.getSnapshot().pendingRpc).toBe(0);
+  });
+
+  test('healthcheck honors the RPC in-flight limit', async () => {
+    const { channel, client } = makeClient({ rpc: { maxInflight: 1 } });
+    const pending = client.invoke('locations', 'pending');
+
+    await expect(client.healthcheck()).rejects.toBeInstanceOf(
+      RpcOverloadedError,
+    );
+    expect(client.getSnapshot().pendingRpc).toBe(1);
+
+    deliverResult(client, channel, 'done', 'application/xjson');
+    await expect(pending).resolves.toBe('done');
   });
 });
 
@@ -345,6 +422,32 @@ describe('Phase A content type negotiation', () => {
     );
 
     await expect(call).rejects.toBeInstanceOf(RpcSerializationError);
+  });
+});
+
+describe('Phase A argument validation', () => {
+  test('reports invalid timeoutMs as a typed rejected call', async () => {
+    const starts: any[] = [];
+    const finishes: any[] = [];
+    const { channel, client } = makeClient({
+      observer: {
+        onRpcStart: (event) => starts.push(event),
+        onRpcFinish: (event) => finishes.push(event),
+      },
+    });
+
+    await expect(
+      client.invoke('locations', 'invalid_timeout', {}, {}, { timeoutMs: NaN }),
+    ).rejects.toBeInstanceOf(RpcInvalidArgumentError);
+
+    expect(channel.publish).not.toHaveBeenCalled();
+    expect(starts).toHaveLength(1);
+    expect(finishes).toEqual([
+      expect.objectContaining({
+        outcome: 'invalid_argument',
+        deliveryState: 'not_sent',
+      }),
+    ]);
   });
 });
 
